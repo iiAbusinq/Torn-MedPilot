@@ -22,7 +22,7 @@ async function browser({ stock = { 68: 3, 739: 2 }, current = 1300, maximum = 20
     medicalIcon = true, factionPerks = [], storage = new Map(), startNow = 1_800_000_000_000,
     timezoneOffsetMinutes = 0, secureStorage = null, accessLevel = 3,
     inventoryTimestamp = Math.floor(startNow / 1000), armouryDomLoaded = true,
-    unusableArmouryIds = [] } = {}) {
+    unusableArmouryIds = [], pda = false, pdaApiKey = null, sidebarLife = null } = {}) {
     settings = { apiKey: 'test-key', ...settings };
     let now = startNow;
     let holdStock = false, holdNextApi = false, stockReads = 0, apiReads = 0;
@@ -98,8 +98,16 @@ async function browser({ stock = { 68: 3, 739: 2 }, current = 1300, maximum = 20
     storage.set('cheap_medout_v2', JSON.stringify(settings));
     secureStorage ||= storage.secureStorage || new Map();
     storage.secureStorage = secureStorage;
+    const sessionStorage = {};
+    if (sidebarLife) {
+        sessionStorage.sidebarData123 = JSON.stringify({ bars: { life: sidebarLife } });
+    }
+    sessionStorage.getItem = key => sessionStorage[key] ?? null;
     const context = {
-        document, window: { addEventListener: (event, handler) => windowListeners.set(event, handler) },
+        document, window: {
+            addEventListener: (event, handler) => windowListeners.set(event, handler),
+            ...(pda ? { __tornpda: { tab: {} } } : {}),
+        },
         location: { pathname: armoury ? '/factions.php' : '/item.php', hash: armoury ? '#/tab=armoury' : '' },
         localStorage: {
             getItem: key => storage.get(key) ?? null,
@@ -109,7 +117,7 @@ async function browser({ stock = { 68: 3, 739: 2 }, current = 1300, maximum = 20
         GM_getValue: (key, fallback) => secureStorage.has(key) ? secureStorage.get(key) : fallback,
         GM_setValue: (key, value) => secureStorage.set(key, value),
         GM_deleteValue: key => secureStorage.delete(key),
-        sessionStorage: {},
+        sessionStorage,
         URLSearchParams, Date: class extends Date {
             static now() { return now; }
             getTimezoneOffset() { return -timezoneOffsetMinutes; }
@@ -185,7 +193,9 @@ async function browser({ stock = { 68: 3, 739: 2 }, current = 1300, maximum = 20
                 reject }));
         },
     };
-    vm.runInNewContext(fs.readFileSync(`${__dirname}/medpilot.user.js`, 'utf8'), context);
+    let source = fs.readFileSync(`${__dirname}/medpilot.user.js`, 'utf8');
+    if (pdaApiKey !== null) source = source.replaceAll('###PDA-APIKEY###', pdaApiKey);
+    vm.runInNewContext(source, context);
     const flush = () => new Promise(resolve => setImmediate(resolve));
     await flush();
     return {
@@ -245,6 +255,23 @@ test('saving an API key keeps it out of the page localStorage', async () => {
     assert.equal(JSON.parse(b.storage.get('cheap_medout_v2')).apiKey, undefined);
     assert.equal(b.storage.get('cheap_medout_api_v1'), undefined);
     assert.equal(b.secureStorage.get('cheap_medout_api_key_v1'), 'secret-key');
+});
+
+test('Torn PDA uses its injected API key instead of a stored desktop key', async () => {
+    const b = await browser({ pda: true, pdaApiKey: 'pda-key', settings: { apiKey: 'desktop-key' } });
+
+    const apiUrls = b.fetches.filter(call => call.url.startsWith('https://api.torn.com/'))
+        .map(call => call.url);
+    assert.ok(apiUrls.length > 0);
+    assert.ok(apiUrls.every(url => url.includes('key=pda-key')));
+});
+
+test('Torn PDA shows its managed-key status instead of an API-key input', async () => {
+    const b = await browser({ pda: true, pdaApiKey: 'pda-key' });
+
+    assert.doesNotMatch(b.panelHtml(), /id="cm-key"/);
+    assert.match(b.panelHtml(), /Using the API key provided by Torn PDA/i);
+    assert.match(b.panelHtml(), /Minimal access required/i);
 });
 
 test('a legacy API key is migrated out of the page localStorage', async () => {
@@ -610,6 +637,14 @@ test('full life waits for a readable life bar and recovers when it becomes avail
     assert.equal(b.button('full').disabled, false);
     b.button('full').click();
     assert.deepEqual(b.requests.map(r => r.id), [68]);
+});
+
+test('Torn PDA reads life from the sidebar session data when its life bar is absent', async () => {
+    const b = await browser({ lifeAvailable: false, pda: true, pdaApiKey: 'test-key',
+        sidebarLife: { amount: 1200, max: 2000 }, stock: { 68: 30 } });
+
+    assert.equal(b.text('life'), '1200/2000');
+    assert.equal(b.button('full').disabled, false);
 });
 
 test('full life rechecks a disappearing life bar before another predicted use', async () => {

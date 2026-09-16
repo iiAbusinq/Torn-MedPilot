@@ -8,7 +8,7 @@ const browsers = [
     'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
 ];
 
-const render = (t, body, extraCss = '') => {
+const render = (t, body, extraCss = '', windowSize = '800,600') => {
     const browser = browsers.find(fs.existsSync);
     if (!browser) {
         t.skip('Chromium browser unavailable');
@@ -19,7 +19,7 @@ const render = (t, body, extraCss = '') => {
     const start = source.indexOf('const CSS = `') + 'const CSS = `'.length;
     const css = source.slice(start, source.indexOf('`;', start));
     const html = `<!doctype html><style>${css}${extraCss}</style>${body}`;
-    const result = spawnSync(browser, ['--headless=new', '--disable-gpu', '--no-sandbox', '--window-size=800,600', '--dump-dom',
+    const result = spawnSync(browser, ['--headless=new', '--disable-gpu', '--no-sandbox', `--window-size=${windowSize}`, '--dump-dom',
         `data:text/html;base64,${Buffer.from(html).toString('base64')}`], { encoding: 'utf8', timeout: 15000 });
 
     assert.equal(result.status, 0, result.stderr);
@@ -55,6 +55,24 @@ test('API popup values remain readable against Torn table styles', t => {
     '.content-wrapper td{color:rgb(10,10,10)}');
 
     if (output) assert.match(output, /data-value-color="rgb\(207, 207, 207\)"/);
+});
+
+test('Torn PDA API popup stays fully inside a narrow viewport', t => {
+    const output = render(t, `
+        <div class="cm-panel cm-pda"><div class="cm-settings cm-open">
+            <div class="cm-key-field" style="flex:none;width:170px">
+                <details class="cm-api-info" open><summary>i</summary>
+                    <div id="popup" class="cm-api-popup" style="height:420px">API usage</div>
+                </details>
+            </div>
+        </div></div>
+        <script>
+            const box = document.querySelector('#popup').getBoundingClientRect();
+            document.body.dataset.inside = String(box.left >= 0 && box.top >= 0
+                && box.right <= innerWidth && box.bottom <= innerHeight);
+        </script>`, '', '360,640');
+
+    if (output) assert.match(output, /data-inside="true"/);
 });
 
 test('spendable item pills wrap below the API key and blood type', t => {

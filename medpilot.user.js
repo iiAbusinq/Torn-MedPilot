@@ -16,6 +16,7 @@
 (function bootstrap() {
     'use strict';
 
+    const PDA_API_KEY = '###PDA-APIKEY###';
     const BAG_ID = {
         'A+': 732, 'A-': 733, 'B+': 734, 'B-': 735, 'AB+': 736, 'AB-': 737, 'O+': 738, 'O-': 739,
     };
@@ -290,6 +291,8 @@
         return;
     }
 
+    const isPda = Boolean(window.__tornpda || window.flutter_inappwebview);
+    const pdaApiKey = isPda && !PDA_API_KEY.includes('###') ? PDA_API_KEY.trim() : '';
 
     function createSettingsStore() {
         const stored = (() => {
@@ -300,19 +303,21 @@
         delete stored.apiKey;
         delete stored.exclude;
         delete stored.extraPct;
-        const secureApiKey = GM_getValue(API_KEY_KEY, '');
-        if (!secureApiKey && legacyApiKey) GM_setValue(API_KEY_KEY, legacyApiKey);
+        const secureApiKey = isPda ? '' : GM_getValue(API_KEY_KEY, '');
+        if (!isPda && !secureApiKey && legacyApiKey) GM_setValue(API_KEY_KEY, legacyApiKey);
         localStorage.removeItem(API_CACHE_KEY);
         const settings = {
             bloodType: 'o-', excludeOwn: legacyExclude.slice(), excludeArmoury: legacyExclude.slice(),
             ...stored,
-            apiKey: secureApiKey || legacyApiKey,
+            apiKey: isPda ? pdaApiKey : secureApiKey || legacyApiKey,
         };
         const save = () => {
             const { apiKey, ...pageSettings } = settings;
             localStorage.setItem(SETTINGS_KEY, JSON.stringify(pageSettings));
-            if (apiKey) GM_setValue(API_KEY_KEY, apiKey);
-            else GM_deleteValue(API_KEY_KEY);
+            if (!isPda) {
+                if (apiKey) GM_setValue(API_KEY_KEY, apiKey);
+                else GM_deleteValue(API_KEY_KEY);
+            }
         };
         save();
         return { settings, save };
@@ -483,6 +488,12 @@
             elementCache[selector] = document.querySelector(selector);
             return elementCache[selector];
         };
+        const storedSidebarData = () => {
+            try {
+                const storageKey = Object.keys(sessionStorage).find(name => /sidebarData\d+/.test(name));
+                return storageKey ? JSON.parse(sessionStorage.getItem(storageKey)) : null;
+            } catch { return null; }
+        };
         const readIcons = () => {
             const strip = findLive(statusIcons);
             const propsKey = strip && Object.keys(strip).find(name => name.startsWith('__reactProps'));
@@ -496,17 +507,19 @@
         };
         const readLife = () => {
             const value = findLive(lifeValue);
-            if (!value) return null;
-            const [current, maximum] = value.textContent.split('/').map(part => parseInt(part));
+            if (value) {
+                const [current, maximum] = value.textContent.split('/').map(part => parseInt(part));
+                if (Number.isFinite(current) && maximum > 0) return { current, maximum };
+            }
+            if (!isPda) return null;
+            const life = storedSidebarData()?.bars?.life;
+            const current = Number(life?.amount);
+            const maximum = Number(life?.max);
             return Number.isFinite(current) && maximum > 0 ? { current, maximum } : null;
         };
         const storedMaxCooldown = () => {
-            try {
-                const storageKey = Object.keys(sessionStorage).find(name => /sidebarData\d+/.test(name));
-                const icons = storageKey && JSON.parse(sessionStorage.getItem(storageKey)).statusIcons.icons;
-                const medical = icons && icons.medical_cooldown;
-                return parseMaxCooldown(medical && medical.factionUpgrade);
-            } catch { return null; }
+            const medical = storedSidebarData()?.statusIcons?.icons?.medical_cooldown;
+            return parseMaxCooldown(medical?.factionUpgrade);
         };
         const serverNow = () => Date.now() + clockOffsetMs;
         const noteServerClock = (response, sentAt) => {
@@ -700,7 +713,13 @@
 
     function createPanelView({ fromArmoury: isArmoury }) {
         const panel = document.createElement('div');
-        panel.className = 'cm-panel';
+        panel.className = 'cm-panel' + (isPda ? ' cm-pda' : '');
+        const apiDataStorage = isPda
+            ? 'Latest bars/perks, inventory data and local item deductions, only locally'
+            : 'API key, latest bars/perks, inventory data and local item deductions, only locally';
+        const keyStorage = isPda
+            ? 'Provided by Torn PDA; sent only to the official Torn API'
+            : 'Your userscript manager; sent only to the official Torn API';
         panel.innerHTML = `
         <div class="cm-actions">
             <div class="cm-action">
@@ -729,22 +748,24 @@
         </div>
         <div id="cm-settings" class="cm-settings">
             <div class="cm-key-field">
-                <label for="cm-key">API key — Minimal required for medical planning</label>
+                ${isPda
+                    ? '<span class="cm-pda-key">Using the API key provided by Torn PDA<br>Minimal access required</span>'
+                    : '<label for="cm-key">API key — Minimal required for medical planning</label>'}
                 <details class="cm-api-info">
                     <summary title="How your API key is used" aria-label="How your API key is used">i</summary>
                     <div class="cm-api-popup" role="note">
                         <strong>API usage</strong>
                         <table><tbody>
-                            <tr><th>Data storage</th><td>API key, latest bars/perks, inventory data and local item deductions, only locally</td></tr>
+                            <tr><th>Data storage</th><td>${apiDataStorage}</td></tr>
                             <tr><th>Data sharing</th><td>Nobody</td></tr>
                             <tr><th>Purpose</th><td>Personal medical cooldown and life planning</td></tr>
-                            <tr><th>Key storage</th><td>Your userscript manager; sent only to the official Torn API</td></tr>
+                            <tr><th>Key storage</th><td>${keyStorage}</td></tr>
                             <tr><th>Access</th><td>Minimal — user bars/perks, own inventory and API-key access level</td></tr>
                             <tr><th>Faction stock</th><td>Read from the armoury page or loaded after your click, then stored until you refresh it</td></tr>
                         </tbody></table>
                     </div>
                 </details>
-                <input id="cm-key" type="password" placeholder="Minimal API key required">
+                ${isPda ? '' : '<input id="cm-key" type="password" placeholder="Minimal API key required">'}
             </div>
             <label>Your blood type
                 <select id="cm-blood">
@@ -1154,14 +1175,15 @@
     function openSettings(focusKey = false) {
         $('settings').classList.add('cm-open');
         $('toggle').classList.add('cm-open');
-        $('key').value = settings.apiKey;
+        const keyInput = $('key');
+        if (keyInput) keyInput.value = settings.apiKey;
         $('blood').value = settings.bloodType;
         const excluded = fromArmoury ? settings.excludeArmoury : settings.excludeOwn;
         panel.querySelectorAll('[data-med-ids]').forEach(chip => {
             const ids = chip.dataset.medIds.split(',').map(Number);
             chip.classList.toggle('cm-on', ids.every(id => !excluded.includes(id)));
         });
-        if (focusKey) $('key').focus();
+        if (focusKey && keyInput) keyInput.focus();
     }
 
     function closeSettings() {
@@ -1170,6 +1192,12 @@
     }
 
     function showRequiredKeyNotice(message = requiredInventoryMessage) {
+        if (isPda) {
+            setNotice(`${message} Configure a Minimal key in Torn PDA's userscript settings.`, false, {
+                dismissible: false,
+            });
+            return;
+        }
         setNotice(message, false, {
             actionLabel: 'Add API key',
             dismissible: false,
@@ -1373,7 +1401,8 @@
         else openSettings();
     });
     $('save').addEventListener('click', async () => {
-        settings.apiKey = $('key').value.trim();
+        const keyInput = $('key');
+        if (keyInput) settings.apiKey = keyInput.value.trim();
         settings.bloodType = $('blood').value;
         const excluded = [...panel.querySelectorAll('[data-med-ids]')]
             .filter(chip => !chip.classList.contains('cm-on'))
@@ -1523,6 +1552,7 @@
 .cm-panel .cm-settings.cm-open{display:flex}
 .cm-panel .cm-settings label{flex:1 1 170px;font-size:11px;color:#949494}
 .cm-panel .cm-key-field{position:relative;flex:1 1 170px;font-size:11px;color:#949494}
+.cm-panel .cm-pda-key{display:block;padding-right:22px;color:#cfcfcf;line-height:1.45}
 .cm-panel .cm-api-info{position:absolute;z-index:4;top:-3px;right:0}
 .cm-panel .cm-api-info summary{display:grid;place-items:center;width:16px;height:16px;border:1px solid #666;
     border-radius:50%;color:#ddd;font-size:10px;font-weight:bold;cursor:pointer;list-style:none}
@@ -1530,6 +1560,8 @@
 .cm-panel .cm-api-popup{position:absolute;top:21px;right:0;width:320px;max-width:calc(100vw - 40px);
     padding:10px;border:1px solid #555;border-radius:4px;background:#222;color:#ddd;
     box-shadow:0 5px 18px rgba(0,0,0,.55);font-size:10px;line-height:1.35}
+.cm-panel.cm-pda .cm-api-popup{position:fixed;top:50%;right:12px;left:12px;width:auto;max-width:none;
+    max-height:calc(100vh - 24px);box-sizing:border-box;overflow:auto;transform:translateY(-50%)}
 .cm-panel .cm-api-popup strong{display:block;margin-bottom:6px;color:#fff;font-size:11px}
 .cm-panel .cm-api-popup table{width:100%;border-collapse:collapse}
 .cm-panel .cm-api-popup th,.cm-panel .cm-api-popup td{padding:4px;border-top:1px solid #3d3d3d;
