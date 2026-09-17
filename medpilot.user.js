@@ -738,8 +738,8 @@
             ${stat('clock', 'Med CD', 'cd')}
             ${stat('heart', 'Life', 'life')}
             <span class="cm-spacer"></span>
-            <button id="cm-refresh" class="cm-icon" title="Refresh">${icon('refresh')}</button>
-            <button id="cm-toggle" class="cm-icon" title="Settings"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg></button>
+            <button id="cm-refresh" class="cm-icon" title="Refresh" aria-label="Refresh">${icon('refresh')}</button>
+            <button id="cm-toggle" class="cm-icon" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg></button>
         </div>
         <div id="cm-flash" class="cm-flash" hidden>
             <span id="cm-flash-text"></span>
@@ -1502,17 +1502,17 @@
 .cm-panel .cm-action{flex:1 1 0;min-width:0}
 .cm-panel .cm-btn{width:100%;box-sizing:border-box;min-width:0;display:flex;align-items:center;gap:11px;
     padding:10px 14px;border:0;border-radius:5px;cursor:pointer;text-align:left;color:#fff;
-    font:12px Arial,sans-serif;background:linear-gradient(180deg,#4a9d4a,#357a35)}
-.cm-panel .cm-btn.cm-full{background:linear-gradient(180deg,#4a7d9d,#356a85)}
-.cm-panel .cm-btn:hover:not(:disabled){filter:brightness(1.12)}
-.cm-panel .cm-btn:disabled{background:#3a3a3a;color:#7d7d7d;cursor:default;
+    font:12px Arial,sans-serif;background:linear-gradient(180deg,#3d823d,#357a35)}
+.cm-panel .cm-btn.cm-full{background:linear-gradient(180deg,#3d6883,#356a85)}
+.cm-panel .cm-btn:hover:not(:disabled){filter:brightness(.9)}
+.cm-panel .cm-btn:disabled{background:#3a3a3a;color:#a8a8a8;cursor:default;
     box-shadow:inset 0 0 0 1px #464646}
 .cm-panel .cm-btn svg{flex:none;width:22px;height:22px}
 .cm-panel .cm-btn .txt{min-width:0;flex:1}
 .cm-panel .cm-btn .t1,.cm-panel .cm-btn .t2{display:block}
 .cm-panel .cm-btn .t1{font-weight:bold;font-size:12.5px;white-space:nowrap;overflow:hidden;
     text-overflow:ellipsis}
-.cm-panel .cm-btn .t2{font-size:10.5px;opacity:.78;margin-top:2px;white-space:nowrap;
+.cm-panel .cm-btn .t2{font-size:10.5px;margin-top:2px;white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis}
 .cm-panel .cm-wait{display:flex;align-items:center;gap:6px;padding:7px 4px 0;
     color:#dbc89a;font-size:11px;line-height:1.4}
@@ -1520,14 +1520,14 @@
 .cm-panel .cm-wait svg{flex:none;width:12px;height:12px}
 .cm-panel .cm-wait span{min-width:0;overflow-wrap:anywhere}
 @media(max-width:640px){.cm-panel .cm-actions{flex-direction:column}.cm-panel .cm-action{flex:auto}}
-.cm-panel .cm-btn:disabled .t2{opacity:1;color:#9a7d7d}
+.cm-panel .cm-btn:disabled .t2{opacity:1;color:#c9a8a8}
 .cm-panel .cm-status{display:flex;align-items:center;border-top:1px solid #454545;
     padding:0 4px 0 10px;flex-wrap:wrap}
 .cm-panel .cm-stat{display:flex;align-items:center;gap:7px;padding:9px 14px 9px 0;
     margin-right:14px;border-right:1px solid #444;white-space:nowrap}
 .cm-panel .cm-stat:last-of-type{border-right:0;margin-right:0}
 .cm-panel .cm-stat svg{flex:none;width:15px;height:15px;color:#7f7f7f}
-.cm-panel .cm-stat .k{color:#8d8d8d}
+.cm-panel .cm-stat .k{color:#a3a3a3}
 .cm-panel .cm-stat .v{color:#e2e2e2}
 .cm-panel .cm-spacer{flex:1}
 .cm-panel .cm-icon{width:30px;height:30px;display:grid;place-items:center;border:0;
@@ -1573,12 +1573,13 @@
 .cm-panel .cm-field{flex:1 1 calc(100% - 100px);font-size:11px;color:#949494}
 .cm-panel .cm-toggles{display:flex;gap:6px;margin-top:7px;flex-wrap:wrap}
 .cm-panel .cm-chip{flex:none;padding:6px 13px;border:1px solid #4e4e4e;border-radius:13px;
-    background:#242424;color:#8a8a8a;cursor:pointer;font:11px Arial,sans-serif;white-space:nowrap;
+    background:#242424;color:#9a9a9a;cursor:pointer;font:11px Arial,sans-serif;white-space:nowrap;
     line-height:1;transition:background .12s,border-color .12s,color .12s}
 .cm-panel .cm-chip:hover{border-color:#6d6d6d;color:#b6b6b6}
-.cm-panel .cm-chip.cm-on{background:linear-gradient(180deg,#4a9d4a,#357a35);border-color:#57b357;
+.cm-panel .cm-chip.cm-on{background:linear-gradient(180deg,#3d823d,#357a35);border-color:#57b357;
     color:#fff}
-.cm-panel .cm-chip.cm-on:hover{filter:brightness(1.12);color:#fff}
+.cm-panel .cm-chip.cm-on::before{content:"✓  "}
+.cm-panel .cm-chip.cm-on:hover{filter:brightness(.9);color:#fff}
 .cm-panel .cm-save{padding:7px 22px;border:0;border-radius:3px;background:#4a6d8c;color:#fff;
     font:12px Arial,sans-serif;cursor:pointer}
 `;
