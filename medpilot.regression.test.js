@@ -935,10 +935,16 @@ test('a failed API refresh clears its previously loaded maximum cooldown', async
     assert.equal(b.text('cd'), '0m 00s / 6h 0m?');
 });
 
+test('the wait suggestion shows the same seconds as the hospital clock', async () => {
+    const b = await browser({ stock: { 68: 1, 739: 1 }, hospitalMinutes: 128 + 23.6 / 60, current: 1800 });
+    assert.equal(b.text('hosp'), '2h 08m 23s');
+    assert.match(b.hint('go'), /Wait <span class="cm-wait-time"[^>]*>8m 23s<\/span>/);
+});
+
 test('the separate wait suggestion names the future path and clears after using the current step', async () => {
     const b = await browser({ stock: { 68: 1, 739: 1 }, hospitalMinutes: 128, current: 1800 });
     assert.equal(b.detail('go'), 'SFAK → Bag · 40m CD');
-    assert.match(b.hint('go'), /Wait 8m.*→ <strong>Bag<\/strong> · 30m CD/);
+    assert.match(b.hint('go'), /Wait <span class="cm-wait-time"[^>]*>8m 00s<\/span> → <strong>Bag<\/strong> · 30m CD/);
     assert.match(b.hint('full'), /→ <strong>Bag<\/strong> · 30m CD/);
     b.button('go-hint').click();
     assert.equal(b.requests.length, 0, 'the suggestion does not dispatch an item');

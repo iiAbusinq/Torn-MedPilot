@@ -92,7 +92,7 @@
     function firstCheaperWait(cooldownAfter, maxWait, cooldownNow) {
         if (cooldownAfter(maxWait) >= cooldownNow) return null;
         let tooSoon = 0, cheap = maxWait;
-        while (cheap - tooSoon > 1 / 60) {
+        while (cheap - tooSoon > 1 / 60000) {
             const mid = (tooSoon + cheap) / 2;
             if (cooldownAfter(mid) < cooldownNow) cheap = mid;
             else tooSoon = mid;
@@ -815,7 +815,11 @@
             buttonHints.get(button).innerHTML = hint || '';
             button.disabled = !enabled;
         };
-        const renderClocks = ({ hospitalExact, used, maxShown, readMax }) => {
+        const renderClocks = ({ now, hospitalExact, used, maxShown, readMax }) => {
+            panel.querySelectorAll('.cm-wait-time').forEach(wait => {
+                const text = asClock((wait.dataset.until - now) / 60000, Math.floor);
+                if (wait.textContent !== text) wait.textContent = text;
+            });
             const hospital = hospitalExact > 0 ? asClock(hospitalExact, Math.floor) : 'none';
             const cooldown = `${asClock(used, Math.floor)} / ${asDuration(maxShown)}${readMax ? '' : '?'}`;
             if (find('hosp').textContent !== hospital) find('hosp').textContent = hospital;
@@ -856,8 +860,8 @@
         let predictionExpiresAt = 0;
         let inventoryRevision = 0;
 
-        const minsUntil = timestamp => timestamp
-            ? Math.max(0, (timestamp * 1000 - serverNow()) / 60000) : 0;
+        const minsUntil = (timestamp, now = serverNow()) => timestamp
+            ? Math.max(0, (timestamp * 1000 - now) / 60000) : 0;
         const requestIsSettled = request =>
             request.status === 'success' || request.status === 'refused';
         const pendingCount = () => pendingUseCount;
@@ -903,7 +907,8 @@
             const life = sidebarLife && lifeTarget
                 ? { current: Math.max(sidebarLife.current, lifeTarget.current), maximum: sidebarLife.maximum }
                 : sidebarLife;
-            const hospitalExact = minsUntil(predictedHospital(hospitalStamp, hospitalTarget));
+            const now = serverNow();
+            const hospitalExact = minsUntil(predictedHospital(hospitalStamp, hospitalTarget), now);
             const hospitalLeft = Math.ceil(hospitalExact);
             if (hospitalTarget && hospitalStamp <= hospitalTarget) {
                 hospitalTarget = 0;
@@ -916,7 +921,7 @@
             const missingLife = life
                 ? Math.max(0, (life.maximum - life.current) / life.maximum * 100) : null;
             return {
-                hospitalExact, hospitalLeft, missingLife, life, sidebarLife, used, maxShown,
+                now, hospitalExact, hospitalLeft, missingLife, life, sidebarLife, used, maxShown,
                 maxCooldown, readMax,
             };
         }
@@ -1243,7 +1248,7 @@
         }
         updateRecovery();
         const status = readCurrentStatus();
-        const { hospitalExact, hospitalLeft, missingLife, life, sidebarLife, used, maxShown,
+        const { now, hospitalExact, hospitalLeft, missingLife, life, sidebarLife, used, maxShown,
             maxCooldown, readMax } = status;
 
         renderClocks(status);
@@ -1257,7 +1262,7 @@
         }
 
         const toNextLife = accountData.lifeRegen
-            ? accountData.lifeRegen.interval - (serverNow() / 1000) % accountData.lifeRegen.interval : Infinity;
+            ? accountData.lifeRegen.interval - (now / 1000) % accountData.lifeRegen.interval : Infinity;
 
         const waitHint = (res, lifePercent) => {
             const planAfter = waitMinutes => {
@@ -1277,7 +1282,8 @@
             const cheaper = planAfter(wait);
             const saved = res.cooldown - cheaper.cooldown;
             if (saved < HINT_MIN_SAVING) return '';
-            return `${icon('hour')}<span>Wait ${asClock(wait)} → `
+            return `${icon('hour')}<span>Wait <span class="cm-wait-time" data-until="${now + wait * 60000}">`
+                + `${asClock(wait, Math.floor)}</span> → `
                 + `<strong>${pathLabel(cheaper.items) || 'No items'}</strong> · ${cheaper.cooldown}m CD</span>`;
         };
 
