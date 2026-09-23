@@ -1205,3 +1205,22 @@ test('the clocks keep counting down from the last read while the page is unfocus
     b.setActive(true); await b.flush();
     assert.equal(b.text('hosp'), '29m 55s', 'focus reads the page again');
 });
+
+test('the refresh button always reloads the API data, even within the cached hour', async () => {
+    const b = await browser({ hospitalMinutes: 20 });
+    const stock = b.stockReads(), api = b.apiReads();
+    await b.button('refresh').click(); await b.flush();
+    assert.equal(b.stockReads(), stock + 1);
+    assert.ok(b.apiReads() > api, 'perks and bars are reloaded too');
+});
+
+test('the API data reloads on every whole hour, even while the page is unfocused', async () => {
+    const b = await browser({ hospitalMinutes: 90 });
+    b.setActive(false);
+    const stock = b.stockReads(), api = b.apiReads();
+    b.advance(3599); await b.flush();
+    assert.equal(b.stockReads(), stock, 'nothing before the hour');
+    b.advance(1); await b.flush();
+    assert.equal(b.stockReads(), stock + 1);
+    assert.ok(b.apiReads() > api);
+});

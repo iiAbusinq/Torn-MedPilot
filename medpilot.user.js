@@ -428,12 +428,12 @@
             dataRequest = pending;
             return pending.promise;
         };
-        const loadAccountData = async () => {
+        const loadAccountData = async (force = false) => {
             while (currentSettings.apiKey) {
                 const key = currentSettings.apiKey;
                 const hour = apiHour();
                 clearAccountData();
-                const cached = readCache(key, hour);
+                const cached = !force && readCache(key, hour);
                 if (cached) {
                     applyAccountData(cached, hour);
                     return;
@@ -569,7 +569,7 @@
     }
 
     function createInventoryService({ settings: currentSettings, request, fromArmoury: isArmoury,
-        apiHour, loadArmoury }) {
+        apiHour, loadArmoury, pageIsActive: canReadPage }) {
         let identity = null;
         let armourySnapshot = null;
         const source = isArmoury ? 'faction' : 'user';
@@ -653,7 +653,7 @@
                     throw failure;
                 }
             } else if (!armourySnapshot) {
-                const domSnapshot = readArmouryDom();
+                const domSnapshot = canReadPage() ? readArmouryDom() : null;
                 if (domSnapshot !== null) storeArmourySnapshot(domSnapshot);
                 else {
                     const cached = inventoryCache().faction;
@@ -677,7 +677,7 @@
             const key = currentSettings.apiKey;
             const hour = apiHour();
             const cache = inventoryCache();
-            let snapshot = validCache(cache[source], key, hour) ? cache[source] : null;
+            let snapshot = !manual && validCache(cache[source], key, hour) ? cache[source] : null;
             if (!snapshot) {
                 const response = await request('v2/user/inventory?cat=Medical&limit=250', key);
                 const rows = response.inventory?.items;
@@ -699,7 +699,7 @@
     }
 
     const inventoryService = createInventoryService({
-        settings, request: api, fromArmoury, apiHour,
+        settings, request: api, fromArmoury, apiHour, pageIsActive,
         loadArmoury: () => tornPost('factions.php',
             { step: 'armouryTabContent', type: 'medical', start: '0' }),
     });
@@ -1323,7 +1323,8 @@
         }
     }
 
-    async function refresh(quiet, includeApi = true, manualInventory = false) {
+    // manual: the user asked for it, so skip the hourly API caches and reload the armoury.
+    async function refresh(quiet, includeApi = true, manual = false) {
         if (useController.isRecovering()) {
             if (!quiet) await checkRecovery();
             return false;
@@ -1338,9 +1339,9 @@
             inventoryError = '';
             if (!settings.apiKey) clearApiData();
             else if (includeApi && (!quiet || !accountData.perksKnown || accountData.hour !== apiHour())) {
-                await refreshPerksAndLife();
+                await refreshPerksAndLife(manual);
             }
-            const quantityById = await readInventory({ manual: manualInventory });
+            const quantityById = await readInventory({ manual });
             if (!startedDuringUse && !useController.pendingCount() && !useController.isRecovering()
                 && revision === useController.revision()) inventory = { quantityById };
             if (pageIsActive()) render();
@@ -1352,7 +1353,7 @@
                 setButton(fullBtn, 'Full life', 'unavailable', false);
             }
             if (e.requiresManualInventoryLoad) showArmouryLoadNotice(
-                manualInventory ? 'Could not load faction inventory — try again.' : undefined);
+                manual ? 'Could not load faction inventory — try again.' : undefined);
             else if (!settings.apiKey || e.code === 16) showRequiredKeyNotice();
             else setNotice(e.message, false);
             if (pageIsActive()) render();
@@ -1405,7 +1406,7 @@
     $('flash-x').addEventListener('click', () => { panelView.dismissNotice(); render(); });
 
     $('refresh').addEventListener('click', async () => {
-        if (await refresh(false, true, fromArmoury) && inventory) {
+        if (await refresh(false, true, true) && inventory) {
             setNotice(`Refreshed — ${inventorySummary()}`, true);
             render();
         }
@@ -1482,7 +1483,13 @@
     // Placing the panel and counting down from the last read touch no data,
     // so both keep going while the page is unfocused.
     setInterval(ensureMounted, 300);
-    setInterval(() => { if (inventory) renderClocks(readCurrentStatus(pageIsActive())); }, 100);
+    // The API may be called unfocused: reload it on every whole hour, focused or not.
+    let loadedHour = apiHour();
+    setInterval(() => {
+        if (!inventory) return;
+        if (loadedHour !== apiHour()) { loadedHour = apiHour(); refresh(true); }
+        renderClocks(readCurrentStatus(pageIsActive()));
+    }, 100);
     onActivityChange();
     ensureMounted();
 
