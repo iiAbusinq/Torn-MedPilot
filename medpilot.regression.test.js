@@ -22,12 +22,12 @@ async function browser({ stock = { 68: 3, 739: 2 }, current = 1300, maximum = 20
     medicalIcon = true, factionPerks = [], storage = new Map(), startNow = 1_800_000_000_000,
     timezoneOffsetMinutes = 0, secureStorage = null, accessLevel = 3,
     inventoryTimestamp = Math.floor(startNow / 1000), armouryDomLoaded = true,
-    unusableArmouryIds = [], pda = false, pdaApiKey = null, sidebarLife = null } = {}) {
+    unusableArmouryIds = [], pda = false, pdaApiKey = null, sidebarLife = null, active = true } = {}) {
     settings = { apiKey: 'test-key', ...settings };
     let now = startNow;
     let holdStock = false, holdNextApi = false, stockReads = 0, apiReads = 0;
     let failStock = false, apiFailure = null, currentFactionPerks = factionPerks;
-    let focused = true;
+    let focused = active;
     const documentListeners = new Map(), windowListeners = new Map();
     const stockResponses = [], apiResponses = [];
     const elements = new Map(), intervals = new Map(), observers = [], requests = [], fetches = [];
@@ -82,7 +82,7 @@ async function browser({ stock = { 68: 3, 739: 2 }, current = 1300, maximum = 20
     const anchor = { insertAdjacentElement(position, panel) { this.previousElementSibling = panel; } };
     const document = {
         createElement: tag => element(tag), head: element('head'), cookie: '',
-        visibilityState: 'visible', hasFocus: () => focused,
+        visibilityState: active ? 'visible' : 'hidden', hasFocus: () => focused,
         addEventListener: (event, handler) => documentListeners.set(event, handler),
         querySelector(selector) {
             if (selector.includes('status-icons')) return strip.isConnected ? strip : null;
@@ -213,6 +213,7 @@ async function browser({ stock = { 68: 3, 739: 2 }, current = 1300, maximum = 20
         requests, sidebar, flush, apiResponses, storage, secureStorage, fetches,
         stockResponses, holdStock(value = true) { holdStock = value; }, stockReads: () => stockReads,
         panelHtml: () => element('div').innerHTML,
+        mounted: () => !!anchor.previousElementSibling,
         apiReads: () => apiReads,
         holdNextApi() { holdNextApi = true; },
         setFactionPerks(value) { currentFactionPerks = value; },
@@ -1173,4 +1174,34 @@ test('an inactive recovery remains paused until the page is active again', async
     b.setActive(true); await b.flush();
     assert.match(b.text('flash-text'), /Item use confirmed/);
     assert.equal(b.stockReads(), 1);
+});
+
+test('a page loaded unfocused mounts the panel without reading any data until focused', async () => {
+    const b = await browser({ active: false, hospitalMinutes: 130 });
+    assert.ok(b.mounted());
+    assert.equal(b.detail('go'), 'focus the page to update');
+    assert.equal(b.text('hosp'), '');
+    assert.equal(b.stockReads(), 0);
+    assert.equal(b.apiReads(), 0);
+    b.setActive(true); await b.flush();
+    assert.equal(b.stockReads(), 1);
+    assert.equal(b.text('hosp'), '2h 10m 00s');
+    assert.equal(b.button('go').disabled, false);
+});
+
+test('a focused 100ms clock tick picks up sidebar changes right away', async () => {
+    const b = await browser({ hospitalMinutes: 20 });
+    b.sidebar.hospital += 600;
+    b.advance(0.5);
+    assert.equal(b.text('hosp'), '29m 59s', 'read within 0.1s while focused');
+});
+
+test('the clocks keep counting down from the last read while the page is unfocused', async () => {
+    const b = await browser({ hospitalMinutes: 20 });
+    b.setActive(false);
+    b.sidebar.hospital += 600;
+    b.advance(5);
+    assert.equal(b.text('hosp'), '19m 55s', 'counts down without reading the sidebar');
+    b.setActive(true); await b.flush();
+    assert.equal(b.text('hosp'), '29m 55s', 'focus reads the page again');
 });

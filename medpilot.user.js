@@ -856,6 +856,7 @@
         let lifeTarget = null;
         let lastHospitalStamp = null;
         let lastSidebarLife = null;
+        let lastIcons = {};
         const predictionRevision = { hospital: 0, cooldown: 0, life: 0 };
         let predictionExpiresAt = 0;
         let inventoryRevision = 0;
@@ -872,11 +873,12 @@
             && (recoveryState.attempts >= MAX_AUTO_RECOVERY_CHECKS && !recoveryState.check
                 ? 'unable to confirm use — refresh to check' : 'checking item use…');
 
-        function readCurrentStatus() {
-            const icons = readIcons();
+        // fromPage false reuses the last sidebar read, so an unfocused tick never touches the page.
+        function readCurrentStatus(fromPage = true) {
+            const icons = fromPage ? (lastIcons = readIcons()) : lastIcons;
             const hospitalStamp = icons.hospital ? icons.hospital.timerExpiresAt : 0;
             const cooldownStamp = icons.medical ? icons.medical.timerExpiresAt : 0;
-            const sidebarLife = readLife();
+            const sidebarLife = fromPage ? readLife() : lastSidebarLife;
             const newHospital = lastHospitalStamp !== null && hospitalStamp > lastHospitalStamp + 1;
             const lifeLost = sidebarLife && lastSidebarLife
                 && (sidebarLife.current < lastSidebarLife.current || sidebarLife.maximum !== lastSidebarLife.maximum);
@@ -900,7 +902,7 @@
                 predictionRevision.life++;
             }
             const readMax = parseMaxCooldown(icons.medical && icons.medical.factionUpgrade)
-                || (accountData.knownMaxCooldown ??= storedMaxCooldown());
+                || (fromPage ? (accountData.knownMaxCooldown ??= storedMaxCooldown()) : accountData.knownMaxCooldown);
             const used = minsUntil(predictedCooldown(cooldownStamp, cooldownTarget));
             const maxShown = readMax || DEFAULT_MAX_COOLDOWN;
             const maxCooldown = readMax || Infinity;
@@ -1221,7 +1223,7 @@
     let mounted = false;
     function ensureMounted() {
         if (!fromArmoury && mounted && statusReader.isWatching() && panel.isConnected) return;
-        statusReader.watch(render);
+        if (pageIsActive()) statusReader.watch(render);
         const anchor = panelBelongsOnPage() ? document.querySelector(ANCHOR) : null;
         if (!anchor) {
             panel.remove();
@@ -1229,7 +1231,13 @@
             return;
         }
         if (anchor.previousElementSibling !== panel) anchor.insertAdjacentElement('beforebegin', panel);
-        if (!mounted) { mounted = true; refresh(); }
+        if (mounted) return;
+        mounted = true;
+        if (pageIsActive()) refresh();
+        else {
+            setButton(goBtn, 'Medout', 'focus the page to update', false);
+            setButton(fullBtn, 'Full life', 'focus the page to update', false);
+        }
     }
 
     function render() {
@@ -1450,11 +1458,7 @@
 
     let ticks = [];
     const startTicks = () => {
-        if (!ticks.length) ticks = [
-            setInterval(ensureMounted, 300),
-            setInterval(render, 1000),
-            setInterval(() => { if (inventory) renderClocks(readCurrentStatus()); }, 100),
-        ];
+        if (!ticks.length) ticks = [setInterval(render, 1000)];
     };
     const stopTicks = () => { ticks.forEach(clearInterval); ticks = []; };
 
@@ -1468,14 +1472,19 @@
         const wasMounted = mounted;
         ensureMounted();
         render();
-        if (wasMounted) refresh(true);
+        if (wasMounted) refresh(!!inventory);
     }
 
     document.addEventListener('visibilitychange', onActivityChange);
     window.addEventListener('focus', onActivityChange);
     window.addEventListener('blur', onActivityChange);
 
+    // Placing the panel and counting down from the last read touch no data,
+    // so both keep going while the page is unfocused.
+    setInterval(ensureMounted, 300);
+    setInterval(() => { if (inventory) renderClocks(readCurrentStatus(pageIsActive())); }, 100);
     onActivityChange();
+    ensureMounted();
 
 
     const ICONS = `
