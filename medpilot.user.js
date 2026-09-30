@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MedPilot
 // @namespace    https://github.com/iiAbusinq
-// @version      1.1
+// @version      1.2
 // @description  Cheapest medical items cooldown-wise: one button to leave hospital, one to leave hospital at full life. Own items on item.php, faction armoury on factions.php
 // @author       AlbertoStegeman
 // @license      MIT
@@ -761,7 +761,6 @@
                             <tr><th>Purpose</th><td>Personal medical cooldown and life planning</td></tr>
                             <tr><th>Key storage</th><td>${keyStorage}</td></tr>
                             <tr><th>Access</th><td>Minimal — user bars/perks, own inventory and API-key access level</td></tr>
-                            <tr><th>Faction stock</th><td>Read from the armoury page or loaded after your click, then stored until you refresh it</td></tr>
                         </tbody></table>
                     </div>
                 </details>
@@ -820,7 +819,7 @@
                 const text = asClock((wait.dataset.until - now) / 60000, Math.floor);
                 if (wait.textContent !== text) wait.textContent = text;
             });
-            const hospital = hospitalExact > 0 ? asClock(hospitalExact, Math.floor) : 'none';
+            const hospital = hospitalExact > 0 ? asClock(hospitalExact, Math.floor) : 'Out';
             const cooldown = `${asClock(used, Math.floor)} / ${asDuration(maxShown)}${readMax ? '' : '?'}`;
             if (find('hosp').textContent !== hospital) find('hosp').textContent = hospital;
             if (find('cd').textContent !== cooldown) find('cd').textContent = cooldown;
@@ -871,7 +870,7 @@
         const isRecovering = () => !!recoveryState;
         const recoveryDetail = () => recoveryState
             && (recoveryState.attempts >= MAX_AUTO_RECOVERY_CHECKS && !recoveryState.check
-                ? 'unable to confirm use — refresh to check' : 'checking item use…');
+                ? 'Unable to confirm use — refresh to check' : 'Checking item use…');
 
         // fromPage false reuses the last sidebar read, so an unfocused tick never touches the page.
         function readCurrentStatus(fromPage = true) {
@@ -1235,8 +1234,8 @@
         mounted = true;
         if (pageIsActive()) refresh();
         else {
-            setButton(goBtn, 'Medout', 'focus the page to update', false);
-            setButton(fullBtn, 'Full life', 'focus the page to update', false);
+            setButton(goBtn, 'Medout', 'Focus the page to update', false);
+            setButton(fullBtn, 'Full life', 'Focus the page to update', false);
         }
     }
 
@@ -1297,7 +1296,7 @@
 
         const offer = (btn, label, res, lifePercent) => {
             if (res.error) { setButton(btn, label, res.error, false); return null; }
-            if (!res.items.length) { setButton(btn, label, 'nothing to do', false); return null; }
+            if (!res.items.length) { setButton(btn, label, 'Nothing to do', false); return null; }
             const detail = res.items.length === 1
                 ? `${res.cooldown}m cooldown`
                 : `${pathLabel(res.items)} · ${res.cooldown}m CD`;
@@ -1309,13 +1308,13 @@
         const limits = { cooldownNow: used, maxCooldown };
 
         nextMedout = null;
-        if (hospitalLeft <= 0) setButton(goBtn, 'Medout', 'not in hospital', false);
+        if (hospitalLeft <= 0) setButton(goBtn, 'Medout', 'Not in hospital', false);
         else nextMedout = offer(goBtn, 'Medout',
             plan(hospitalLeft, 0, effectiveness(), usable, inventory.quantityById, settings.bloodType, limits), 0);
 
         nextFullLife = null;
-        if (!sidebarLife) setButton(fullBtn, 'Full life', 'waiting for life data', false);
-        else if (hospitalLeft <= 0 && missingLife <= 0) setButton(fullBtn, 'Full life', 'nothing to do', false);
+        if (!sidebarLife) setButton(fullBtn, 'Full life', 'Waiting for life data', false);
+        else if (hospitalLeft <= 0 && missingLife <= 0) setButton(fullBtn, 'Full life', 'Already full life', false);
         else {
             nextFullLife = offer(fullBtn, 'Full life',
                 plan(hospitalLeft, missingLife, effectiveness(), usable, inventory.quantityById, settings.bloodType, limits),
@@ -1332,8 +1331,8 @@
         const revision = useController.revision();
         const startedDuringUse = useController.pendingCount() > 0;
         if (!quiet) {
-            setButton(goBtn, 'Medout', 'loading…', false);
-            setButton(fullBtn, 'Full life', 'loading…', false);
+            setButton(goBtn, 'Medout', 'Loading…', false);
+            setButton(fullBtn, 'Full life', 'Loading…', false);
         }
         try {
             inventoryError = '';
@@ -1349,8 +1348,8 @@
         } catch (e) {
             inventoryError = e.code === 16 ? requiredInventoryMessage : e.message;
             if (!quiet) {
-                setButton(goBtn, 'Medout', 'unavailable', false);
-                setButton(fullBtn, 'Full life', 'unavailable', false);
+                setButton(goBtn, 'Medout', 'Unavailable', false);
+                setButton(fullBtn, 'Full life', 'Unavailable', false);
             }
             if (e.requiresManualInventoryLoad) showArmouryLoadNotice(
                 manual ? 'Could not load faction inventory — try again.' : undefined);
@@ -1365,7 +1364,7 @@
         setNotice('Loading faction medical inventory…', true, { dismissible: false });
         render();
         if (await refresh(false, true, true) && inventory) {
-            setNotice(`Loaded — ${inventorySummary()}`, true);
+            setNotice(`Loaded: ${inventorySummary()}`, true);
             render();
         }
     }
@@ -1380,7 +1379,7 @@
 
     function inventorySummary() {
         const detail = settings.apiKey
-            ? `${accountData.detectedEffectiveness}% from perks`
+            ? `+${effectiveness()}% effectiveness`
             : 'no API key';
         const usable = usablePool();
         const lines = usable
@@ -1390,8 +1389,8 @@
             (total, med) => total
                 + (BLOOD_BAG_IDS.includes(med.id) ? inventory.quantityById[med.id] || 0 : 0), 0);
         if (bagTotal) lines.push(`Usable Blood Bags ×${bagTotal}`);
-        const source = fromArmoury ? 'armoury' : 'your items';
-        return `bonus +${effectiveness()}% (${detail}) · ${source}: `
+        const source = fromArmoury ? 'Armoury' : 'Your items';
+        return `(${detail}) · ${source}: `
             + (lines.length ? lines.join(', ') : 'nothing usable');
     }
 
@@ -1407,7 +1406,7 @@
 
     $('refresh').addEventListener('click', async () => {
         if (await refresh(false, true, true) && inventory) {
-            setNotice(`Refreshed — ${inventorySummary()}`, true);
+            setNotice(`Refreshed: ${inventorySummary()}`, true);
             render();
         }
     });
@@ -1439,10 +1438,9 @@
                 const quantityById = await readInventory();
                 inventory = { quantityById };
                 useController.bumpRevision();
-                const pct = accountData.detectedEffectiveness;
                 const spare = accountData.accessLevel > requiredAccessLevel
                     ? ` This key is ${accountData.accessType}; ${requiredAccessName} would do.` : '';
-                setNotice(`Key works — detected +${pct}% medical effect.${spare}`, true);
+                setNotice(`Changes saved.${spare}`, true);
             } catch (e) {
                 inventoryError = e.code === 16 ? requiredInventoryMessage : e.message;
                 const removed = e.apiKeyRemoved ? ' It was removed from this script.' : '';
@@ -1545,9 +1543,11 @@
 .cm-panel .cm-btn:disabled .t2{opacity:1;color:#c9a8a8}
 .cm-panel .cm-status{display:flex;align-items:center;border-top:1px solid #454545;
     padding:0 4px 0 10px;flex-wrap:wrap}
-.cm-panel .cm-stat{display:flex;align-items:center;gap:7px;padding:9px 14px 9px 0;
-    margin-right:14px;border-right:1px solid #444;white-space:nowrap}
-.cm-panel .cm-stat:last-of-type{border-right:0;margin-right:0}
+.cm-panel .cm-stat{display:flex;align-items:center;gap:7px;padding:9px 0;white-space:nowrap}
+.cm-panel .cm-stat + .cm-stat{margin-left:14px;padding-left:14px;border-left:1px solid #444}
+@media(max-width:640px){.cm-panel .cm-status{display:grid;grid-template-columns:1fr auto auto;padding-top:4px;padding-bottom:4px}
+    .cm-panel .cm-stat{grid-column:1;padding:5px 0}.cm-panel .cm-status .cm-icon{grid-row:1;grid-column:2}.cm-panel .cm-status .cm-icon:last-child{grid-column:3}.cm-panel .cm-status .cm-spacer{display:none}
+    .cm-panel .cm-stat + .cm-stat{margin-left:0;padding-left:0;border-left:0}}
 .cm-panel .cm-stat svg{flex:none;width:15px;height:15px;color:#7f7f7f}
 .cm-panel .cm-stat .k{color:#a3a3a3}
 .cm-panel .cm-stat .v{color:#e2e2e2}
@@ -1582,8 +1582,10 @@
 .cm-panel .cm-api-popup{position:absolute;top:21px;right:0;width:320px;max-width:calc(100vw - 40px);
     padding:10px;border:1px solid #555;border-radius:4px;background:#222;color:#ddd;
     box-shadow:0 5px 18px rgba(0,0,0,.55);font-size:10px;line-height:1.35}
-.cm-panel.cm-pda .cm-api-popup{position:fixed;top:50%;right:12px;left:12px;width:auto;max-width:none;
-    max-height:calc(100vh - 24px);box-sizing:border-box;overflow:auto;transform:translateY(-50%)}
+.cm-panel.cm-pda .cm-key-field{flex-basis:100%}
+.cm-panel.cm-pda .cm-api-info{position:static}
+.cm-panel.cm-pda .cm-api-info summary{position:absolute;top:-3px;right:0}
+.cm-panel.cm-pda .cm-api-popup{top:calc(100% + 4px);left:0;width:auto;max-width:none;box-sizing:border-box}
 .cm-panel .cm-api-popup strong{display:block;margin-bottom:6px;color:#fff;font-size:11px}
 .cm-panel .cm-api-popup table{width:100%;border-collapse:collapse}
 .cm-panel .cm-api-popup th,.cm-panel .cm-api-popup td{padding:4px;border-top:1px solid #3d3d3d;

@@ -57,15 +57,16 @@ test('API popup values remain readable against Torn table styles', t => {
     if (output) assert.match(output, /data-value-color="rgb\(207, 207, 207\)"/);
 });
 
-test('Torn PDA API popup stays fully inside a narrow viewport', t => {
+test('Torn PDA API popup stays fully inside a narrow viewport, even under a transformed Torn wrapper', t => {
     const output = render(t, `
+        <div style="transform:translateZ(0);height:1400px">
         <div class="cm-panel cm-pda"><div class="cm-settings cm-open">
             <div class="cm-key-field" style="flex:none;width:170px">
                 <details class="cm-api-info" open><summary>i</summary>
-                    <div id="popup" class="cm-api-popup" style="height:420px">API usage</div>
+                    <div id="popup" class="cm-api-popup" style="height:200px">API usage</div>
                 </details>
             </div>
-        </div></div>
+        </div></div></div>
         <script>
             const box = document.querySelector('#popup').getBoundingClientRect();
             document.body.dataset.inside = String(box.left >= 0 && box.top >= 0
