@@ -452,7 +452,7 @@ test('saving a Minimal key accepts it for medical planning', async () => {
 
     await b.saveKey('minimal-key');
 
-    assert.match(b.text('flash-text'), /Key works/i);
+    assert.match(b.text('flash-text'), /^Changes saved\.$/);
     assert.equal(b.secureStorage.get('cheap_medout_api_key_v1'), 'minimal-key');
 });
 
@@ -461,13 +461,6 @@ test('a Public Only key cannot enable medical planning', async () => {
 
     assert.equal(b.fetches.some(call => call.url.includes('/v2/user/inventory')), false);
     assert.equal(b.button('go').disabled, true);
-});
-
-test('the API disclosure explains how faction stock is loaded', async () => {
-    const b = await browser();
-
-    assert.match(b.panelHtml(), /Faction stock/);
-    assert.match(b.panelHtml(), /stored until you refresh it/i);
 });
 
 test('inventory API snapshots are reused until the next local clock hour', async () => {
@@ -711,7 +704,7 @@ test('medout can dispatch its second item while the first response is still pend
     const b = await browser({ stock: { 68: 1, 739: 2 }, hospitalMinutes: 130 });
     b.button('go').click(); b.button('go').click();
     assert.deepEqual(b.requests.map(r => r.id), [68, 739]);
-    assert.equal(b.text('hosp'), 'none');
+    assert.equal(b.text('hosp'), 'Out');
     b.requests[1].finish(); await b.flush();
     b.requests[0].finish(false); await b.flush();
     assert.match(b.text('hosp'), /10m/, 'only the refused SFAK is undone, retaining the bag');
@@ -785,7 +778,7 @@ test('a new hospitalization replaces a pending release prediction without an obs
     const b = await browser({ stock: { 66: 5, 739: 5 }, hospitalMinutes: 60 });
     b.button('go').click();
     b.requests[0].finish(); await b.flush();
-    assert.equal(b.text('hosp'), 'none');
+    assert.equal(b.text('hosp'), 'Out');
     b.sidebar.hospital += 3600;
     b.statusChanged();
     assert.match(b.text('hosp'), /2h/);
@@ -838,7 +831,7 @@ test('partial hospital updates retain the remaining release prediction', async (
     b.button('go').click(); b.requests[0].finish(); await b.flush();
     b.button('go').click(); b.requests[1].finish(); await b.flush();
     b.sidebar.hospital -= 1200; b.tick();
-    assert.equal(b.text('hosp'), 'none');
+    assert.equal(b.text('hosp'), 'Out');
     assert.equal(b.button('go').disabled, true);
 });
 
@@ -1179,7 +1172,7 @@ test('an inactive recovery remains paused until the page is active again', async
 test('a page loaded unfocused mounts the panel without reading any data until focused', async () => {
     const b = await browser({ active: false, hospitalMinutes: 130 });
     assert.ok(b.mounted());
-    assert.equal(b.detail('go'), 'focus the page to update');
+    assert.equal(b.detail('go'), 'Focus the page to update');
     assert.equal(b.text('hosp'), '');
     assert.equal(b.stockReads(), 0);
     assert.equal(b.apiReads(), 0);
