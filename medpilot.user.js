@@ -129,7 +129,7 @@
     }
 
     function plan(hospitalMinutes, lifePercent, effectiveness, meds, quantityById, bloodType,
-        { cooldownNow = 0, maxCooldown = Infinity } = {}) {
+        { cooldownNow = 0, maxCooldown = Infinity, mostLife = false } = {}) {
         const compatibleBags = ALLOWED_BLOOD[bloodType] || [];
         const owned = meds.filter(med => (quantityById[med.id] || 0) > 0);
         const usable = owned.filter(med =>
@@ -213,20 +213,61 @@
             return { bestCounts, bestRank, cooldownBlocked };
         }
 
+        // The most life that still clears hospital without crossing the cooldown limit.
+        function findMostLife() {
+            const maxUseful = profiles.map(profile => Math.min(profile.quantity, Math.max(
+                Math.ceil(hospitalMinutes / Math.max(profile.hospital, 1)),
+                Math.ceil(lifePercent / Math.max(profile.life, 1)))));
+            let mostCounts = null, most = null;
+            counts.fill(0);
+            (function search(index, hospitalLeft) {
+                if (index < profiles.length) {
+                    for (let count = 0; count <= maxUseful[index]; count++) {
+                        counts[index] = count;
+                        search(index + 1, hospitalLeft - count * profiles[index].hospital);
+                    }
+                    counts[index] = 0;
+                    return;
+                }
+                if (hospitalLeft > 0) return;
+                const rank = rankOf();
+                if (!rank.itemCount || cooldownNow + rank.cooldown - rank.largestStep >= maxCooldown) return;
+                const healed = Math.min(rank.life, lifePercent);
+                if (!most || healed > most.healed + 1e-9
+                    || healed > most.healed - 1e-9 && isBetter(rank, most.rank)) {
+                    mostCounts = counts.slice();
+                    most = { healed, rank };
+                }
+            })(0, hospitalMinutes);
+            return mostCounts && { items: pathOf(mostCounts), cooldown: most.rank.cooldown, life: most.healed };
+        }
+
         const { bestCounts, bestRank, cooldownBlocked } = findBest();
         if (!bestCounts) {
             if (cooldownBlocked) {
+                const most = mostLife ? findMostLife() : null;
+                const fallback = mostLife ? { mostLife: most } : {};
                 let tooSoon = 0;
                 let ready = Math.max(Math.ceil(hospitalMinutes), Math.floor(cooldownNow) + 1);
                 if (!findBest(ready).bestCounts) {
-                    return { error: 'Medical cooldown limit cannot fit a complete plan.' };
+                    return { error: 'Medical cooldown limit cannot fit a complete plan.', ...fallback };
                 }
                 while (ready - tooSoon > 1) {
                     const mid = Math.floor((tooSoon + ready) / 2);
                     if (findBest(mid).bestCounts) ready = mid;
                     else tooSoon = mid;
                 }
-                return { error: `Med CD full, wait ${asDuration(ready)}`, wait: ready };
+                if (most) {
+                    // A countdown needs the exact moment, or every render would restart it at the whole minute.
+                    let exact = ready;
+                    while (exact - tooSoon > 1 / 60000) {
+                        const mid = (tooSoon + exact) / 2;
+                        if (findBest(mid).bestCounts) exact = mid;
+                        else tooSoon = mid;
+                    }
+                    most.fullLifeIn = exact;
+                }
+                return { error: `Not possible with current med CD, wait ${asDuration(ready)}`, wait: ready, ...fallback };
             }
             const reachable = profiles.reduce((total, profile) => total + profile.quantity * profile.hospital, 0);
             return reachable < hospitalMinutes
@@ -237,23 +278,27 @@
                 : { error: 'Not enough items to also fill your life.' };
         }
 
-        const path = [];
-        bestCounts.forEach((count, index) => {
-            const profile = profiles[index];
-            let remaining = count;
-            for (const source of profile.sources) {
-                const take = Math.min(remaining, source.quantity);
-                for (let taken = 0; taken < take; taken++) {
-                    path.push({
-                        id: source.id, name: source.name, short: source.short,
-                        hospital: profile.hospital, life: profile.life, cooldown: profile.cooldown,
-                    });
+        return { items: pathOf(bestCounts), cooldown: bestRank.cooldown };
+
+        function pathOf(chosenCounts) {
+            const path = [];
+            chosenCounts.forEach((count, index) => {
+                const profile = profiles[index];
+                let remaining = count;
+                for (const source of profile.sources) {
+                    const take = Math.min(remaining, source.quantity);
+                    for (let taken = 0; taken < take; taken++) {
+                        path.push({
+                            id: source.id, name: source.name, short: source.short,
+                            hospital: profile.hospital, life: profile.life, cooldown: profile.cooldown,
+                        });
+                    }
+                    remaining -= take;
+                    if (!remaining) break;
                 }
-                remaining -= take;
-                if (!remaining) break;
-            }
-        });
-        return { items: byStartOrder(path), cooldown: bestRank.cooldown };
+            });
+            return byStartOrder(path);
+        }
     }
 
     function foldStock(rows) {
@@ -310,6 +355,7 @@
         localStorage.removeItem(API_CACHE_KEY);
         const settings = {
             bloodType: 'o-', excludeOwn: legacyExclude.slice(), excludeArmoury: legacyExclude.slice(),
+            mostLife: false,
             ...stored,
             apiKey: isPda ? pdaApiKey : secureApiKey || legacyApiKey,
         };
@@ -773,6 +819,11 @@
                     <option value="">no blood bags</option>
                     ${Object.keys(ALLOWED_BLOOD).map(b => `<option value="${b}">${b.toUpperCase()}</option>`).join('')}
                 </select></label>
+            <label>Most life when the med CD blocks full life
+                <select id="cm-most-life">
+                    <option value="no">No</option>
+                    <option value="yes">Yes</option>
+                </select></label>
             <div class="cm-field">Items it may spend ${isArmoury ? 'from the armoury' : 'from your items'}
                 <span class="cm-toggles">
                     ${SPEND_OPTIONS.map(option =>
@@ -1194,6 +1245,7 @@
         const keyInput = $('key');
         if (keyInput) keyInput.value = settings.apiKey;
         $('blood').value = settings.bloodType;
+        $('most-life').value = settings.mostLife ? 'yes' : 'no';
         const excluded = fromArmoury ? settings.excludeArmoury : settings.excludeOwn;
         panel.querySelectorAll('[data-med-ids]').forEach(chip => {
             const ids = chip.dataset.medIds.split(',').map(Number);
@@ -1322,13 +1374,28 @@
         else nextMedout = offer(goBtn, 'Medout',
             plan(hospitalLeft, 0, effectiveness(), usable, inventory.quantityById, settings.bloodType, limits), 0);
 
+        // Shown in place of full life only when the med CD blocks it and the most life still clears hospital.
+        const offerMostLife = res => {
+            const { items, cooldown } = res.mostLife;
+            const detail = items.length === 1 ? `${cooldown}m cooldown` : `${pathLabel(items)} · ${cooldown}m CD`;
+            const { fullLifeIn } = res.mostLife;
+            const fullIn = fullLifeIn === undefined ? 'Full life never fits your max med CD'
+                : `Full life in <span class="cm-wait-time" data-until="${Math.round(now + fullLifeIn * 60000)}">`
+                    + `${asClock(fullLifeIn, Math.floor)}</span>`;
+            setButton(fullBtn, `Most life: ${items[0].name}`, detail, true, `${icon('hour')}<span>${fullIn}</span>`);
+            fullBtn.classList.add('cm-most');
+            return items[0];
+        };
+
         nextFullLife = null;
+        fullBtn.classList.remove('cm-most');
         if (!sidebarLife) setButton(fullBtn, 'Full life', 'Waiting for life data', false);
         else if (hospitalLeft <= 0 && missingLife <= 0) setButton(fullBtn, 'Full life', 'Already full life', false);
         else {
-            nextFullLife = offer(fullBtn, 'Full life',
-                plan(hospitalLeft, missingLife, effectiveness(), usable, inventory.quantityById, settings.bloodType, limits),
-                missingLife);
+            // Exact hospital time picks the same items (item minutes are whole) but keeps the countdown exact.
+            const res = plan(hospitalExact, missingLife, effectiveness(), usable, inventory.quantityById,
+                settings.bloodType, { ...limits, mostLife: settings.mostLife });
+            nextFullLife = res.mostLife ? offerMostLife(res) : offer(fullBtn, 'Full life', res, missingLife);
         }
     }
 
@@ -1428,6 +1495,7 @@
         const keyInput = $('key');
         if (keyInput) settings.apiKey = keyInput.value.trim();
         settings.bloodType = $('blood').value;
+        settings.mostLife = $('most-life').value === 'yes';
         const excluded = [...panel.querySelectorAll('[data-med-ids]')]
             .filter(chip => !chip.classList.contains('cm-on'))
             .flatMap(chip => chip.dataset.medIds.split(',').map(Number));
@@ -1534,6 +1602,7 @@
     padding:10px 14px;border:0;border-radius:5px;cursor:pointer;text-align:left;color:#fff;
     font:12px Arial,sans-serif;background:linear-gradient(180deg,#3d823d,#357a35)}
 .cm-panel .cm-btn.cm-full{background:linear-gradient(180deg,#3d6883,#356a85)}
+.cm-panel .cm-btn.cm-most{background:linear-gradient(180deg,#8f3a3a,#853232)}
 .cm-panel .cm-btn:hover:not(:disabled){filter:brightness(.9)}
 .cm-panel .cm-btn:disabled{background:#3a3a3a;color:#a8a8a8;cursor:default;
     box-shadow:inset 0 0 0 1px #464646}
