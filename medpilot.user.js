@@ -1380,7 +1380,7 @@
             const detail = items.length === 1 ? `${cooldown}m cooldown` : `${pathLabel(items)} · ${cooldown}m CD`;
             const { fullLifeIn } = res.mostLife;
             const fullIn = fullLifeIn === undefined ? 'Full life never fits your max med CD'
-                : `Full life in <span class="cm-wait-time" data-until="${Math.round(now + fullLifeIn * 60000)}">`
+                : `Full life available in <span class="cm-wait-time" data-until="${Math.round(now + fullLifeIn * 60000)}">`
                     + `${asClock(fullLifeIn, Math.floor)}</span>`;
             setButton(fullBtn, `Most life: ${items[0].name}`, detail, true, `${icon('hour')}<span>${fullIn}</span>`);
             fullBtn.classList.add('cm-most');

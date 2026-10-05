@@ -1267,7 +1267,7 @@ test('most life replaces a cooldown-blocked full life in red and counts down to 
     assert.equal(b.title('full'), 'Most life: Blood Bag : O-');
     assert.equal(b.detail('full'), '30m cooldown');
     assert.equal(b.button('full').classList.contains('cm-most'), true);
-    assert.match(b.hint('full'), /Full life in <span class="cm-wait-time"[^>]*>5m 00s<\/span>/);
+    assert.match(b.hint('full'), /Full life available in <span class="cm-wait-time"[^>]*>5m 00s<\/span>/);
     b.button('full').click();
     assert.deepEqual(b.requests.map(r => r.id), [739]);
 });
