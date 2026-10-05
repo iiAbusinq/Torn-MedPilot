@@ -840,7 +840,7 @@ test('no plan is offered at the cap or when even the cheapest last-step prefix d
         plan(60, 0, 0, MEDS, { 739: 2 }, 'o-', { cooldownNow: 360, maxCooldown: 360 }),
         plan(130, 0, 0, MEDS, { 68: 1, 739: 1 }, 'o-', { cooldownNow: 350, maxCooldown: 360 }),
     ]) {
-        assert.equal(result.error, 'Med CD full, wait 1m');
+        assert.equal(result.error, 'Not possible with current med CD, wait 1m');
         assert.equal(result.wait, 1);
         assert.equal(result.items, undefined);
     }
@@ -853,7 +853,7 @@ test('a cooldown wait never assumes existing cooldown can fall below zero', () =
         { cooldownNow: 0, maxCooldown: 360 });
     const result = after(0);
     assert.equal(result.wait, 280);
-    assert.equal(result.error, 'Med CD full, wait 4h 40m');
+    assert.equal(result.error, 'Not possible with current med CD, wait 4h 40m');
     assert.ok(after(result.wait - 1).error);
     assert.equal(after(result.wait).items.length, 36);
 });
@@ -861,14 +861,14 @@ test('a cooldown wait never assumes existing cooldown can fall below zero', () =
 test('button waits count down for the whole plan across the cooldown cap', async () => {
     const b = await browser({ stock: { 66: 10 }, hospitalMinutes: 140,
         cooldownMinutes: 361, current: 1000, maximum: 2000 });
-    assert.equal(b.detail('go'), 'Med CD full, wait 22m');
-    assert.equal(b.detail('full'), 'Med CD full, wait 1h 2m');
+    assert.equal(b.detail('go'), 'Not possible with current med CD, wait 22m');
+    assert.equal(b.detail('full'), 'Not possible with current med CD, wait 1h 2m');
     b.tick(60);
-    assert.equal(b.detail('go'), 'Med CD full, wait 21m');
-    assert.equal(b.detail('full'), 'Med CD full, wait 1h 1m');
+    assert.equal(b.detail('go'), 'Not possible with current med CD, wait 21m');
+    assert.equal(b.detail('full'), 'Not possible with current med CD, wait 1h 1m');
     b.tick(1);
-    assert.equal(b.detail('go'), 'Med CD full, wait 20m');
-    assert.equal(b.detail('full'), 'Med CD full, wait 1h 0m');
+    assert.equal(b.detail('go'), 'Not possible with current med CD, wait 20m');
+    assert.equal(b.detail('full'), 'Not possible with current med CD, wait 1h 0m');
     b.button('go').click();
     b.button('full').click();
     assert.equal(b.requests.length, 0, 'both plans remain blocked below the cap');
@@ -958,19 +958,50 @@ test('fractional healing sums do not demand another item because of floating-poi
     assert.deepEqual(result.items.map(m => m.id), [68, 739, 739]);
 });
 
-test('a frozen life bar cannot offer more healing after the hospital prediction timeout', async () => {
+test('the life bar takes over from the heal prediction once the cooldown icon shows every use', async () => {
     const b = await browser();
     b.button('full').click(); b.requests[0].finish(); await b.flush();
     b.button('full').click(); b.requests[1].finish(); await b.flush();
-    b.tick(16);
-    assert.equal(b.button('full').disabled, true);
+    b.tick(60);
+    assert.equal(b.button('full').disabled, true, 'an unchanged sidebar keeps the prediction, however long');
+    b.sidebar.cooldown = 1_800_000_000 + 10 * 60; b.tick();
+    assert.equal(b.button('full').disabled, true, 'the icon shows only the first use so far');
+    b.sidebar.cooldown = 1_800_000_000 + 40 * 60; b.tick();
+    assert.equal(b.button('full').disabled, false, 'a bar still short of full is real missing life');
+    assert.match(b.title('full'), /Small First Aid Kit/);
+});
+
+test('a refused use no longer has to appear on the cooldown icon', async () => {
+    const b = await browser();
+    b.button('full').click(); b.button('full').click();
+    b.requests[0].finish(); b.requests[1].finish(false); await b.flush();
+    b.sidebar.cooldown = 1_800_000_000 + 10 * 60; b.tick();
+    assert.equal(b.button('full').disabled, false);
+    assert.match(b.title('full'), /Small First Aid Kit/, 'the bar did not rise, so the shown heal did not land');
+});
+
+test('the heal prediction holds while a use is still pending, however long it takes', async () => {
+    const b = await browser();
+    b.button('full').click(); b.requests[0].finish(); await b.flush();
     b.button('full').click();
-    assert.equal(b.requests.length, 2);
-    b.setLife(1400); b.tick(16);
+    b.tick(3);
     assert.equal(b.button('full').disabled, true);
-    b.setLife(2000); b.tick();
-    b.setLife(1800); b.tick();
-    assert.equal(b.button('full').disabled, false, 'real damage makes healing useful again');
+    b.requests[1].finish(); await b.flush();
+    b.setLife(2000); b.tick(1);
+    assert.equal(b.button('full').disabled, true);
+});
+
+test('damage taken while away is not hidden by a heal the bar never showed before leaving', async () => {
+    const b = await browser();
+    b.button('full').click(); b.button('full').click();
+    b.requests.forEach(request => request.finish()); await b.flush();
+    assert.equal(b.detail('full'), 'Already full life');
+    b.setActive(false);
+    b.advance(5);
+    b.sidebar.cooldown = 1_800_000_000 + 40 * 60;
+    b.setLife(1466);
+    b.setActive(true); await b.flush();
+    assert.equal(b.button('full').disabled, false, 'returning from a fight shows the life actually missing');
 });
 
 test('a lost response preserves the reservation and pauses both buttons until status confirms use', async () => {
@@ -1216,4 +1247,60 @@ test('the API data reloads on every whole hour, even while the page is unfocused
     b.advance(1); await b.flush();
     assert.equal(b.stockReads(), stock + 1);
     assert.ok(b.apiReads() > api);
+});
+
+test('the most-life fallback heals as far as the med CD allows while still clearing hospital', () => {
+    const limits = { cooldownNow: 345, maxCooldown: 360 };
+    const result = plan(60, 35, 0, MEDS, { 66: 5, 739: 5 }, 'o-', { ...limits, mostLife: true });
+    assert.equal(result.error, 'Not possible with current med CD, wait 6m');
+    assert.deepEqual(result.mostLife.items.map(m => m.id), [739]);
+    assert.equal(result.mostLife.life, 30);
+    assert.equal(plan(60, 35, 0, MEDS, { 66: 5, 739: 5 }, 'o-', limits).mostLife, undefined,
+        'only planned when asked for');
+    assert.equal(plan(300, 35, 0, MEDS, { 66: 1, 739: 1 }, 'o-', { ...limits, mostLife: true }).mostLife,
+        undefined, 'nothing to offer when no allowed path leaves hospital');
+});
+
+test('most life replaces a cooldown-blocked full life in red and counts down to full life', async () => {
+    const b = await browser({ stock: { 66: 5, 739: 5 }, hospitalMinutes: 60, cooldownMinutes: 345,
+        settings: { mostLife: true } });
+    assert.equal(b.title('full'), 'Most life: Blood Bag : O-');
+    assert.equal(b.detail('full'), '30m cooldown');
+    assert.equal(b.button('full').classList.contains('cm-most'), true);
+    assert.match(b.hint('full'), /Full life available in <span class="cm-wait-time"[^>]*>5m 00s<\/span>/);
+    b.button('full').click();
+    assert.deepEqual(b.requests.map(r => r.id), [739]);
+});
+
+test('most life stays hidden when it is off, when full life fits or when hospital cannot be cleared', async () => {
+    const off = await browser({ stock: { 66: 5, 739: 5 }, hospitalMinutes: 60, cooldownMinutes: 345 });
+    assert.equal(off.detail('full'), 'Not possible with current med CD, wait 6m');
+    assert.equal(off.button('full').classList.contains('cm-most'), false);
+    const fits = await browser({ stock: { 66: 5, 739: 5 }, hospitalMinutes: 60, settings: { mostLife: true } });
+    assert.match(fits.title('full'), /^Full life: /);
+    assert.equal(fits.button('full').classList.contains('cm-most'), false);
+    const stuck = await browser({ stock: { 66: 1, 739: 1 }, hospitalMinutes: 300, cooldownMinutes: 345,
+        settings: { mostLife: true } });
+    assert.match(stuck.title('full'), /^Full life/);
+    assert.equal(stuck.button('full').disabled, true);
+});
+
+test('the most-life setting is saved and shown as yes or no', async () => {
+    const b = await browser();
+    b.button('toggle').click();
+    assert.equal(b.element('most-life').value, 'no', 'off by default');
+    b.element('most-life').value = 'yes';
+    await b.saveKey('test-key'); await b.flush();
+    assert.equal(JSON.parse(b.storage.get('cheap_medout_v2')).mostLife, true);
+});
+
+test('the full-life countdown under most life keeps counting down while the page is focused', async () => {
+    const b = await browser({ stock: { 66: 5, 739: 5 }, hospitalMinutes: 60, cooldownMinutes: 345,
+        settings: { mostLife: true } });
+    const until = () => +/data-until="(\d+)"/.exec(b.hint('full'))[1];
+    const first = until();
+    b.tick(1);
+    assert.ok(Math.abs(until() - first) <= 2, 'each render keeps the same moment');
+    b.advance(1.5);
+    assert.ok(Math.abs(until() - first) <= 2);
 });
