@@ -65,6 +65,8 @@
     const USE_CONFIRMATION_TIMEOUT_MS = 5000;
     const MAX_AUTO_RECOVERY_CHECKS = 2;
     const PREDICTION_GRACE_MS = 15000;
+    // Every medical item adds at least 10 minutes of cooldown, so this slack can never absorb a missing use.
+    const COOLDOWN_MATCH_SLACK_S = 300;
 
 
     const byStartOrder = items => items.slice().sort((one, other) => one.cooldown - other.cooldown);
@@ -895,8 +897,12 @@
             }
             lastHospitalStamp = hospitalStamp;
             if (sidebarLife) lastSidebarLife = sidebarLife;
-            if (lifeTarget && sidebarLife
-                && sidebarLife.current >= Math.min(lifeTarget.current, lifeTarget.maximum)) {
+            // The sidebar updates life and the medical cooldown together, so once the cooldown
+            // shows every use the bar shows their healing too, and anything lower is real damage.
+            const lifeSettled = !pendingUseCount && !recoveryState && lifeTarget
+                && cooldownStamp >= lifeTarget.shownByCooldown - COOLDOWN_MATCH_SLACK_S;
+            if (lifeTarget && (lifeSettled || sidebarLife
+                && sidebarLife.current >= Math.min(lifeTarget.current, lifeTarget.maximum))) {
                 lifeTarget = null;
                 predictionRevision.life++;
             }
@@ -1070,16 +1076,17 @@
                 lifeGain: life ? Math.floor(life.maximum * item.life / 100) : 0,
             };
             batch.requests.push(request);
-            if (life) {
-                lifeTarget = {
-                    maximum: life.maximum,
-                    current: Math.max(life.current, lifeTarget?.current || 0) + request.lifeGain,
-                };
-            }
             hospitalTarget = (hospitalTarget || icons.hospital?.timerExpiresAt || serverStamp)
                 - item.hospital * 60;
             cooldownTarget = Math.max(cooldownTarget, icons.medical?.timerExpiresAt || 0, serverStamp)
                 + item.cooldown * 60;
+            if (life) {
+                lifeTarget = {
+                    maximum: life.maximum,
+                    current: Math.max(life.current, lifeTarget?.current || 0) + request.lifeGain,
+                    shownByCooldown: cooldownTarget,
+                };
+            }
             getInventory().quantityById[item.id]--;
             recordInventoryUse(item.id, 1);
             inventoryRevision++;
@@ -1091,7 +1098,10 @@
         function rollBackUse(request) {
             const { item, revision: requestRevision, lifeGain } = request;
             if (predictionRevision.hospital === requestRevision.hospital) hospitalTarget += item.hospital * 60;
-            if (lifeTarget && predictionRevision.life === requestRevision.life) lifeTarget.current -= lifeGain;
+            if (lifeTarget && predictionRevision.life === requestRevision.life) {
+                lifeTarget.current -= lifeGain;
+                lifeTarget.shownByCooldown -= item.cooldown * 60;
+            }
             if (predictionRevision.cooldown === requestRevision.cooldown) cooldownTarget -= item.cooldown * 60;
             getInventory().quantityById[item.id]++;
             recordInventoryUse(item.id, -1);

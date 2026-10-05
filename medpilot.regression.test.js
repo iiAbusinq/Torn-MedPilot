@@ -958,19 +958,50 @@ test('fractional healing sums do not demand another item because of floating-poi
     assert.deepEqual(result.items.map(m => m.id), [68, 739, 739]);
 });
 
-test('a frozen life bar cannot offer more healing after the hospital prediction timeout', async () => {
+test('the life bar takes over from the heal prediction once the cooldown icon shows every use', async () => {
     const b = await browser();
     b.button('full').click(); b.requests[0].finish(); await b.flush();
     b.button('full').click(); b.requests[1].finish(); await b.flush();
-    b.tick(16);
-    assert.equal(b.button('full').disabled, true);
+    b.tick(60);
+    assert.equal(b.button('full').disabled, true, 'an unchanged sidebar keeps the prediction, however long');
+    b.sidebar.cooldown = 1_800_000_000 + 10 * 60; b.tick();
+    assert.equal(b.button('full').disabled, true, 'the icon shows only the first use so far');
+    b.sidebar.cooldown = 1_800_000_000 + 40 * 60; b.tick();
+    assert.equal(b.button('full').disabled, false, 'a bar still short of full is real missing life');
+    assert.match(b.title('full'), /Small First Aid Kit/);
+});
+
+test('a refused use no longer has to appear on the cooldown icon', async () => {
+    const b = await browser();
+    b.button('full').click(); b.button('full').click();
+    b.requests[0].finish(); b.requests[1].finish(false); await b.flush();
+    b.sidebar.cooldown = 1_800_000_000 + 10 * 60; b.tick();
+    assert.equal(b.button('full').disabled, false);
+    assert.match(b.title('full'), /Small First Aid Kit/, 'the bar did not rise, so the shown heal did not land');
+});
+
+test('the heal prediction holds while a use is still pending, however long it takes', async () => {
+    const b = await browser();
+    b.button('full').click(); b.requests[0].finish(); await b.flush();
     b.button('full').click();
-    assert.equal(b.requests.length, 2);
-    b.setLife(1400); b.tick(16);
+    b.tick(3);
     assert.equal(b.button('full').disabled, true);
-    b.setLife(2000); b.tick();
-    b.setLife(1800); b.tick();
-    assert.equal(b.button('full').disabled, false, 'real damage makes healing useful again');
+    b.requests[1].finish(); await b.flush();
+    b.setLife(2000); b.tick(1);
+    assert.equal(b.button('full').disabled, true);
+});
+
+test('damage taken while away is not hidden by a heal the bar never showed before leaving', async () => {
+    const b = await browser();
+    b.button('full').click(); b.button('full').click();
+    b.requests.forEach(request => request.finish()); await b.flush();
+    assert.equal(b.detail('full'), 'Already full life');
+    b.setActive(false);
+    b.advance(5);
+    b.sidebar.cooldown = 1_800_000_000 + 40 * 60;
+    b.setLife(1466);
+    b.setActive(true); await b.flush();
+    assert.equal(b.button('full').disabled, false, 'returning from a fight shows the life actually missing');
 });
 
 test('a lost response preserves the reservation and pauses both buttons until status confirms use', async () => {
