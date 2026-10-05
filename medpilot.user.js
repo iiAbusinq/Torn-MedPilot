@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MedPilot
 // @namespace    https://github.com/iiAbusinq
-// @version      1.2
+// @version      1.3
 // @description  Cheapest medical items cooldown-wise: one button to leave hospital, one to leave hospital at full life. Own items on item.php, faction armoury on factions.php
 // @author       AlbertoStegeman
 // @license      MIT
