@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const { MEDS, BLOOD_BAG_IDS, plan } = require('./medpilot.user.js');
+const { MEDS, BLOOD_BAG_IDS, plan, missingToTarget } = require('./medpilot.user.js');
 
 test('a blood bag remains available when the cheaper two-item path cannot finish', () => {
     const result = plan(60, 0, 0, MEDS.filter(m => m.id !== 66),
@@ -1264,7 +1264,7 @@ test('the most-life fallback heals as far as the med CD allows while still clear
 test('most life replaces a cooldown-blocked full life in red and counts down to full life', async () => {
     const b = await browser({ stock: { 66: 5, 739: 5 }, hospitalMinutes: 60, cooldownMinutes: 345,
         settings: { mostLife: true } });
-    assert.equal(b.title('full'), 'Most life: Blood Bag : O-');
+    assert.equal(b.title('full'), 'Most life → 95%: Blood Bag : O-', '65% life plus a 30% bag');
     assert.equal(b.detail('full'), '30m cooldown');
     assert.equal(b.button('full').classList.contains('cm-most'), true);
     assert.match(b.hint('full'), /Full life available in <span class="cm-wait-time"[^>]*>5m 00s<\/span>/);
@@ -1303,4 +1303,46 @@ test('the full-life countdown under most life keeps counting down while the page
     assert.ok(Math.abs(until() - first) <= 2, 'each render keeps the same moment');
     b.advance(1.5);
     assert.ok(Math.abs(until() - first) <= 2);
+});
+
+test('the life target is rounded to whole HP', () => {
+    assert.equal(missingToTarget({ current: 1023, maximum: 1077 }, 95), 0, '95% of 1077 is 1023.15 → 1023');
+    assert.ok(missingToTarget({ current: 1022, maximum: 1077 }, 95) > 0);
+    assert.equal(missingToTarget({ current: 1900, maximum: 2000 }, 95), 0, 'exactly on target');
+    assert.ok(missingToTarget({ current: 1890, maximum: 1990 }, 95) > 0, '1890.5 rounds up to 1891');
+    assert.equal(missingToTarget({ current: 1500, maximum: 2000 }, 100), 25, '100% is the plain missing life');
+});
+
+test('a lower life target heals to it for less med CD and renames full life', async () => {
+    const stock = { 66: 5, 67: 5, 68: 5, 739: 5 };
+    const full = await browser({ stock, current: 1760, maximum: 2000 });
+    assert.equal(full.title('full'), 'Full life: Morphine', '100% stays full life');
+    const target = await browser({ stock, current: 1760, maximum: 2000, settings: { lifeTarget: 95 } });
+    assert.equal(target.title('full'), 'Heal to 95%: First Aid Kit');
+    assert.equal(target.detail('full'), '15m cooldown');
+    const reached = await browser({ stock, current: 1920, maximum: 2000, settings: { lifeTarget: 95 } });
+    assert.equal(reached.title('full'), 'Heal to 95%');
+    assert.equal(reached.detail('full'), 'Already at 95%+');
+});
+
+test('most life counts down to the life target', async () => {
+    const b = await browser({ stock: { 66: 5, 739: 5 }, current: 700, hospitalMinutes: 60, cooldownMinutes: 345,
+        settings: { mostLife: true, lifeTarget: 90 } });
+    assert.equal(b.title('full'), 'Most life → 65%: Blood Bag : O-', '90% needs two bags, the med CD allows one');
+    assert.match(b.hint('full'), /Heal to 90% available in /);
+});
+
+test('the life target defaults to 100, stays within 50 to 100 and falls back to 100 when unreadable', async () => {
+    const b = await browser();
+    b.button('toggle').click();
+    assert.equal(b.element('life-target').value, 100, 'full life by default');
+    b.element('life-target').value = '95';
+    await b.saveKey('test-key'); await b.flush();
+    assert.equal(JSON.parse(b.storage.get('cheap_medout_v2')).lifeTarget, 95);
+    for (const [typed, stored] of [['30', 50], ['-5', 50], ['101', 100], ['94.6', 95], ['', 100], ['abc', 100]]) {
+        b.button('toggle').click();
+        b.element('life-target').value = typed;
+        await b.saveKey('test-key'); await b.flush();
+        assert.equal(JSON.parse(b.storage.get('cheap_medout_v2')).lifeTarget, stored, `${typed || 'empty'} → ${stored}`);
+    }
 });

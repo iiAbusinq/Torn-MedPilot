@@ -111,6 +111,12 @@
             maximum: life.maximum };
     }
 
+    // The target is rounded to whole HP, since that is all the life bar can show.
+    function missingToTarget(life, target) {
+        const targetHp = Math.round(life.maximum * target / 100);
+        return Math.max(0, (targetHp - life.current) / life.maximum * 100);
+    }
+
     function pathLabel(items) {
         const runs = [];
         for (const item of items) {
@@ -332,7 +338,7 @@
         module.exports = {
             MEDS, ALLOWED_BLOOD, BLOOD_BAG_IDS, TOGGLEABLE, SPEND_OPTIONS,
             plan, byStartOrder, parseMaxCooldown, parseMaxMedicalCooldown, foldStock, parsePerks, pathLabel,
-            asClock, asDuration, firstCheaperWait, lifeAfterWaiting,
+            asClock, asDuration, firstCheaperWait, lifeAfterWaiting, missingToTarget,
             predictedHospital, predictedCooldown,
         };
         return;
@@ -355,7 +361,7 @@
         localStorage.removeItem(API_CACHE_KEY);
         const settings = {
             bloodType: 'o-', excludeOwn: legacyExclude.slice(), excludeArmoury: legacyExclude.slice(),
-            mostLife: false,
+            mostLife: false, lifeTarget: 100,
             ...stored,
             apiKey: isPda ? pdaApiKey : secureApiKey || legacyApiKey,
         };
@@ -373,6 +379,7 @@
 
     const settingsStore = createSettingsStore();
     const { settings, save } = settingsStore;
+    const fullLabel = () => (settings.lifeTarget < 100 ? `Heal to ${settings.lifeTarget}%` : 'Full life');
 
     function createApiClient({ settings: currentSettings, save: saveSettings }) {
         const accountData = {
@@ -819,6 +826,8 @@
                     <option value="">no blood bags</option>
                     ${Object.keys(ALLOWED_BLOOD).map(b => `<option value="${b}">${b.toUpperCase()}</option>`).join('')}
                 </select></label>
+            <label>Full life target % (lower saves med CD)
+                <input id="cm-life-target" type="number" min="50" max="100" step="1"></label>
             <label>Most life when the med CD blocks full life
                 <select id="cm-most-life">
                     <option value="no">No</option>
@@ -1246,6 +1255,7 @@
         if (keyInput) keyInput.value = settings.apiKey;
         $('blood').value = settings.bloodType;
         $('most-life').value = settings.mostLife ? 'yes' : 'no';
+        $('life-target').value = settings.lifeTarget;
         const excluded = fromArmoury ? settings.excludeArmoury : settings.excludeOwn;
         panel.querySelectorAll('[data-med-ids]').forEach(chip => {
             const ids = chip.dataset.medIds.split(',').map(Number);
@@ -1297,7 +1307,7 @@
         if (pageIsActive()) refresh();
         else {
             setButton(goBtn, 'Medout', 'Focus the page to update', false);
-            setButton(fullBtn, 'Full life', 'Focus the page to update', false);
+            setButton(fullBtn, fullLabel(), 'Focus the page to update', false);
         }
     }
 
@@ -1312,7 +1322,7 @@
             nextFullLife = null;
             const detail = inventoryError || (settings.apiKey ? 'loading inventory…' : requiredInventoryMessage);
             setButton(goBtn, 'Medout', detail, false);
-            setButton(fullBtn, 'Full life', detail, false);
+            setButton(fullBtn, fullLabel(), detail, false);
             return;
         }
         updateRecovery();
@@ -1326,10 +1336,11 @@
             nextMedout = nextFullLife = null;
             const detail = useController.recoveryDetail();
             setButton(goBtn, 'Medout', detail, false);
-            setButton(fullBtn, 'Full life', detail, false);
+            setButton(fullBtn, fullLabel(), detail, false);
             return;
         }
 
+        const missingTarget = life ? missingToTarget(life, settings.lifeTarget) : missingLife;
         const toNextLife = accountData.lifeRegen
             ? accountData.lifeRegen.interval - (now / 1000) % accountData.lifeRegen.interval : Infinity;
 
@@ -1337,8 +1348,8 @@
             const planAfter = waitMinutes => {
                 const later = lifeAfterWaiting(life, waitMinutes, accountData.lifeRegen, toNextLife);
                 const missing = !lifePercent ? 0
-                    : later ? (later.maximum - later.current) / later.maximum * 100
-                    : missingLife;
+                    : later ? missingToTarget(later, settings.lifeTarget)
+                    : missingTarget;
                 return plan(Math.max(0, Math.ceil(hospitalExact - waitMinutes)), missing,
                     effectiveness(), usable, inventory.quantityById, settings.bloodType, limits);
             };
@@ -1379,23 +1390,28 @@
             const { items, cooldown } = res.mostLife;
             const detail = items.length === 1 ? `${cooldown}m cooldown` : `${pathLabel(items)} · ${cooldown}m CD`;
             const { fullLifeIn } = res.mostLife;
-            const fullIn = fullLifeIn === undefined ? 'Full life never fits your max med CD'
-                : `Full life available in <span class="cm-wait-time" data-until="${Math.round(now + fullLifeIn * 60000)}">`
+            const fullIn = fullLifeIn === undefined ? `${fullLabel()} never fits your max med CD`
+                : `${fullLabel()} available in <span class="cm-wait-time" data-until="${Math.round(now + fullLifeIn * 60000)}">`
                     + `${asClock(fullLifeIn, Math.floor)}</span>`;
-            setButton(fullBtn, `Most life: ${items[0].name}`, detail, true, `${icon('hour')}<span>${fullIn}</span>`);
+            // Floored so the button never promises more than the heal gives; the epsilon absorbs float noise.
+            const reaches = Math.floor(100 - missingLife + res.mostLife.life + 1e-9);
+            setButton(fullBtn, `Most life → ${reaches}%: ${items[0].name}`, detail, true, `${icon('hour')}<span>${fullIn}</span>`);
             fullBtn.classList.add('cm-most');
             return items[0];
         };
 
         nextFullLife = null;
         fullBtn.classList.remove('cm-most');
-        if (!sidebarLife) setButton(fullBtn, 'Full life', 'Waiting for life data', false);
-        else if (hospitalLeft <= 0 && missingLife <= 0) setButton(fullBtn, 'Full life', 'Already full life', false);
+        if (!sidebarLife) setButton(fullBtn, fullLabel(), 'Waiting for life data', false);
+        else if (hospitalLeft <= 0 && missingTarget <= 0) {
+            setButton(fullBtn, fullLabel(),
+                settings.lifeTarget < 100 ? `Already at ${settings.lifeTarget}%+` : 'Already full life', false);
+        }
         else {
             // Exact hospital time picks the same items (item minutes are whole) but keeps the countdown exact.
-            const res = plan(hospitalExact, missingLife, effectiveness(), usable, inventory.quantityById,
+            const res = plan(hospitalExact, missingTarget, effectiveness(), usable, inventory.quantityById,
                 settings.bloodType, { ...limits, mostLife: settings.mostLife });
-            nextFullLife = res.mostLife ? offerMostLife(res) : offer(fullBtn, 'Full life', res, missingLife);
+            nextFullLife = res.mostLife ? offerMostLife(res) : offer(fullBtn, fullLabel(), res, missingTarget);
         }
     }
 
@@ -1409,7 +1425,7 @@
         const startedDuringUse = useController.pendingCount() > 0;
         if (!quiet) {
             setButton(goBtn, 'Medout', 'Loading…', false);
-            setButton(fullBtn, 'Full life', 'Loading…', false);
+            setButton(fullBtn, fullLabel(), 'Loading…', false);
         }
         try {
             inventoryError = '';
@@ -1426,7 +1442,7 @@
             inventoryError = e.code === 16 ? requiredInventoryMessage : e.message;
             if (!quiet) {
                 setButton(goBtn, 'Medout', 'Unavailable', false);
-                setButton(fullBtn, 'Full life', 'Unavailable', false);
+                setButton(fullBtn, fullLabel(), 'Unavailable', false);
             }
             if (e.requiresManualInventoryLoad) showArmouryLoadNotice(
                 manual ? 'Could not load faction inventory — try again.' : undefined);
@@ -1496,6 +1512,9 @@
         if (keyInput) settings.apiKey = keyInput.value.trim();
         settings.bloodType = $('blood').value;
         settings.mostLife = $('most-life').value === 'yes';
+        const typed = String($('life-target').value).trim();
+        const target = Math.round(Number(typed));
+        settings.lifeTarget = typed && Number.isFinite(target) ? Math.min(100, Math.max(50, target)) : 100;
         const excluded = [...panel.querySelectorAll('[data-med-ids]')]
             .filter(chip => !chip.classList.contains('cm-on'))
             .flatMap(chip => chip.dataset.medIds.split(',').map(Number));
