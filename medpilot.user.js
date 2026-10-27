@@ -1665,7 +1665,7 @@
 .cm-panel .cm-icon:hover{background:rgba(255,255,255,.07);color:#ddd}
 .cm-panel .cm-icon.cm-open{background:rgba(255,255,255,.1);color:#eee}
 .cm-panel .cm-icon svg{width:16px;height:16px}
-.cm-panel .cm-flash{display:flex;align-items:flex-start;gap:10px;padding:7px 10px;
+.cm-panel .cm-flash{display:flex;align-items:center;gap:10px;padding:7px 10px;
     border-top:1px solid #454545;font-size:11px;color:#d98c8c}
 .cm-panel .cm-flash[hidden]{display:none}
 .cm-panel .cm-flash.cm-ok{color:#8ac88a}
