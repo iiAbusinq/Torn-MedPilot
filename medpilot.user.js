@@ -907,7 +907,7 @@
         const {
             accountData, getInventory, pageIsActive, readIcons, readInventory, readLife,
             recordInventoryUse, refreshInventory, render, serverNow, setInventory, setNotice,
-            storedMaxCooldown, useItem,
+            showRefusal, storedMaxCooldown, useItem,
         } = dependencies;
         let pendingUseCount = 0;
         let activeBatch = null;
@@ -1201,7 +1201,7 @@
                 if (response?.success === false) {
                     request.status = 'refused';
                     rollBackUse(request);
-                    setNotice(response.text || `${item.name} was refused.`, false);
+                    showRefusal(item, response.text);
                 } else if (response?.success === true) {
                     request.status = 'success';
                 } else {
@@ -1236,6 +1236,7 @@
         serverNow,
         setInventory: value => { inventory = value; },
         setNotice,
+        showRefusal,
         storedMaxCooldown,
         useItem,
     });
@@ -1289,6 +1290,15 @@
             dismissible: false,
             onAction: loadArmouryInventory,
         });
+    }
+
+    function showRefusal(item, text) {
+        // Torn's wording when the saved armoury stock is out of date (a faction mate took the item).
+        if (fromArmoury && /already been used/i.test(text || '')) {
+            showArmouryLoadNotice(`No ${item.name} left in the armoury. Reload the medical inventory to update the plan.`);
+        } else {
+            setNotice(text || `${item.name} was refused.`, false);
+        }
     }
 
     let mounted = false;

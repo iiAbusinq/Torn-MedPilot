@@ -793,6 +793,21 @@ test('a refused use restores the full-life plan and stock', async () => {
     assert.equal(b.button('full').disabled, false);
 });
 
+test('an armoury item already used by someone else explains the stale stock and offers a reload', async () => {
+    const used = { success: false, text: 'This item has already been used.' };
+    const b = await browser({ armoury: true, hospitalMinutes: 20, stock: { 68: 1 } });
+    b.button('go').click();
+    b.requests[0].reply(used); await b.flush();
+    assert.equal(b.text('flash-text'),
+        'No Small First Aid Kit left in the armoury. Reload the medical inventory to update the plan.');
+    assert.equal(b.text('flash-action'), 'Load medical inventory');
+
+    const own = await browser({ hospitalMinutes: 20, stock: { 68: 1 } });
+    own.button('go').click();
+    own.requests[0].reply(used); await own.flush();
+    assert.equal(own.text('flash-text'), 'This item has already been used.');
+});
+
 test('a refused second item retains the first successful heal while the sidebar lags', async () => {
     const b = await browser();
     b.button('full').click(); b.requests[0].finish(); await b.flush();
