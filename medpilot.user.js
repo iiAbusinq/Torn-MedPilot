@@ -369,6 +369,8 @@
     const pdaApiKey = isPda && !PDA_API_KEY.includes('###') ? PDA_API_KEY.trim() : '';
 
     function createSettingsStore() {
+        // Settings are saved on every load, so only a new install has none yet.
+        const newInstall = localStorage.getItem(SETTINGS_KEY) === null;
         const stored = (() => {
             try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch { return {}; }
         })();
@@ -381,7 +383,8 @@
         if (!isPda && !secureApiKey && legacyApiKey) GM_setValue(API_KEY_KEY, legacyApiKey);
         localStorage.removeItem(API_CACHE_KEY);
         const settings = {
-            bloodType: 'o-', excludeOwn: legacyExclude.slice(), excludeArmoury: legacyExclude.slice(),
+            // null: not chosen yet. A new install must pick its own type; existing users keep theirs.
+            bloodType: newInstall ? null : 'o-', excludeOwn: legacyExclude.slice(), excludeArmoury: legacyExclude.slice(),
             mostLife: false, lifeTarget: 100,
             ...stored,
             apiKey: isPda ? pdaApiKey : secureApiKey || legacyApiKey,
@@ -844,6 +847,7 @@
             </div>
             <label>Your blood type
                 <select id="cm-blood">
+                    <option value="unset" disabled hidden>Choose your own blood type…</option>
                     <option value="">no blood bags</option>
                     ${Object.keys(ALLOWED_BLOOD).map(b => `<option value="${b}">${b.toUpperCase()}</option>`).join('')}
                 </select></label>
@@ -1275,7 +1279,8 @@
         $('toggle').classList.add('cm-open');
         const keyInput = $('key');
         if (keyInput) keyInput.value = settings.apiKey;
-        $('blood').value = settings.bloodType;
+        $('blood').value = settings.bloodType ?? 'unset';
+        markBloodRequired();
         $('most-life').value = settings.mostLife ? 'yes' : 'no';
         $('life-target').value = settings.lifeTarget;
         const excluded = fromArmoury ? settings.excludeArmoury : settings.excludeOwn;
@@ -1284,6 +1289,10 @@
             chip.classList.toggle('cm-on', ids.every(id => !excluded.includes(id)));
         });
         if (focusKey && keyInput) keyInput.focus();
+    }
+
+    function markBloodRequired() {
+        $('blood').classList.toggle('cm-required', $('blood').value === 'unset');
     }
 
     function closeSettings() {
@@ -1302,6 +1311,17 @@
             actionLabel: 'Add API key',
             dismissible: false,
             onAction: () => openSettings(true),
+        });
+    }
+
+    // Only asked once a key is in, so the key notice always comes first.
+    const needsBloodType = () => Boolean(settings.apiKey) && settings.bloodType === null;
+
+    function showBloodTypeNotice() {
+        setNotice('Set your own blood type so MedPilot only plans blood bags you can take.', false, {
+            actionLabel: 'Choose blood type',
+            dismissible: false,
+            onAction: () => { openSettings(); $('blood').focus(); },
         });
     }
 
@@ -1343,6 +1363,7 @@
     }
 
     function render() {
+        if (needsBloodType()) showBloodTypeNotice();
         panelView.renderNotice();
         if (!inventory) {
             const status = readCurrentStatus();
@@ -1368,6 +1389,12 @@
             const detail = useController.recoveryDetail();
             setButton(goBtn, 'Medout', detail, false);
             setButton(fullBtn, fullLabel(), detail, false);
+            return;
+        }
+        if (needsBloodType()) {
+            nextMedout = nextFullLife = null;
+            setButton(goBtn, 'Medout', 'Choose your blood type first', false);
+            setButton(fullBtn, fullLabel(), 'Choose your blood type first', false);
             return;
         }
 
@@ -1534,6 +1561,7 @@
             render();
         }
     });
+    $('blood').addEventListener('change', markBloodRequired);
     $('toggle').addEventListener('click', () => {
         if ($('settings').classList.contains('cm-open')) closeSettings();
         else openSettings();
@@ -1541,7 +1569,7 @@
     $('save').addEventListener('click', async () => {
         const keyInput = $('key');
         if (keyInput) settings.apiKey = keyInput.value.trim();
-        settings.bloodType = $('blood').value;
+        settings.bloodType = $('blood').value === 'unset' ? null : $('blood').value;
         settings.mostLife = $('most-life').value === 'yes';
         const typed = String($('life-target').value).trim();
         const target = Math.round(Number(typed));
@@ -1723,6 +1751,8 @@
 .cm-panel .cm-settings input,.cm-panel .cm-settings select{width:100%;box-sizing:border-box;
     margin-top:4px;padding:6px;background:#222;border:1px solid #555;border-radius:3px;color:#ddd;
     font:12px Arial,sans-serif}
+.cm-panel .cm-settings select.cm-required{border-color:#c9a14a;color:#e0c27a;
+    box-shadow:0 0 0 2px rgba(201,161,74,.25)}
 .cm-panel .cm-field{flex:1 1 calc(100% - 100px);font-size:11px;color:#949494}
 .cm-panel .cm-toggles{display:flex;gap:6px;margin-top:7px;flex-wrap:wrap}
 .cm-panel .cm-chip{flex:none;padding:6px 13px;border:1px solid #4e4e4e;border-radius:13px;
