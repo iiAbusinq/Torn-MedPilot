@@ -1361,3 +1361,16 @@ test('the life target defaults to 100, stays within 50 to 100 and falls back to 
         assert.equal(JSON.parse(b.storage.get('cheap_medout_v2')).lifeTarget, stored, `${typed || 'empty'} → ${stored}`);
     }
 });
+
+test('two days of hospital with a deep armoury renders without freezing the page', async () => {
+    const b = await browser({ armoury: true, hospitalMinutes: 2 * 24 * 60, current: 980, maximum: 2450,
+        stock: { 66: 200, 67: 200, 68: 200, 739: 200 }, settings: { bloodType: 'o-' } });
+    const started = Date.now();
+    b.tick(1);
+    const took = Date.now() - started;
+    assert.equal(b.title('go'), 'Medout');
+    assert.match(b.detail('go'), /^Not possible with current med CD, wait 22h\s5\dm$/);
+    assert.equal(b.title('full'), 'Full life');
+    assert.match(b.detail('full'), /^Not possible with current med CD, wait 22h\s5\dm$/);
+    assert.ok(took < 500, `one render took ${took}ms`);
+});

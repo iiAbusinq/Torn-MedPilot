@@ -161,6 +161,9 @@
             profileByEffect.set(effectKey, profile);
         }
         const profiles = [...profileByEffect.values()];
+        // Past this much cooldown even the largest last item would cross the limit.
+        const largestCooldown = Math.max(...profiles.map(profile => profile.cooldown));
+        const cooldownBudget = maxCooldown - cooldownNow + largestCooldown;
 
         const counts = new Array(profiles.length).fill(0);
         const rankOf = () => {
@@ -189,9 +192,20 @@
                 Math.ceil(hospitalNeeded / Math.max(profile.hospital, 1)),
                 Math.ceil(lifePercent / Math.max(profile.life, 1)))));
             let bestCounts = null, bestRank = null, cooldownBlocked = false;
+            const budget = maxCooldown - currentCooldown + largestCooldown;
+            // What the remaining profiles could still heal, to tell a blocked branch from a short one.
+            const hospitalCap = [0], lifeCap = [0];
+            for (let index = profiles.length - 1; index >= 0; index--) {
+                hospitalCap.unshift(hospitalCap[0] + maxUseful[index] * profiles[index].hospital);
+                lifeCap.unshift(lifeCap[0] + maxUseful[index] * profiles[index].life);
+            }
             counts.fill(0);
             (function search(index, hospitalLeft, lifeLeft, cooldownSoFar) {
                 if (bestRank && cooldownSoFar > bestRank.cooldown) return;
+                if (cooldownSoFar >= budget && cooldownSoFar > 0) {
+                    if (hospitalLeft <= hospitalCap[index] && lifeLeft <= lifeCap[index] + 1e-9) cooldownBlocked = true;
+                    return;
+                }
                 if (hospitalLeft <= 0 && lifeLeft <= 1e-9) {
                     const rank = rankOf();
                     const cooldownBeforeLastItem = currentCooldown + rank.cooldown - rank.largestStep;
@@ -209,10 +223,14 @@
                 const profile = profiles[index];
                 for (let count = 0; count <= maxUseful[index]; count++) {
                     counts[index] = count;
-                    search(index + 1,
-                        hospitalLeft - count * profile.hospital,
-                        lifeLeft - count * profile.life,
-                        cooldownSoFar + count * profile.cooldown);
+                    const cooldown = cooldownSoFar + count * profile.cooldown;
+                    search(index + 1, hospitalLeft - count * profile.hospital, lifeLeft - count * profile.life, cooldown);
+                    // Every larger count is pruned the same way, so only record whether one would complete.
+                    if (cooldown >= budget) {
+                        if (hospitalLeft <= hospitalCap[index] && lifeLeft <= lifeCap[index] + 1e-9) cooldownBlocked = true;
+                        break;
+                    }
+                    if (bestRank && cooldown > bestRank.cooldown) break;
                 }
                 counts[index] = 0;
             })(0, hospitalNeeded, lifePercent, 0);
@@ -226,11 +244,14 @@
                 Math.ceil(lifePercent / Math.max(profile.life, 1)))));
             let mostCounts = null, most = null;
             counts.fill(0);
-            (function search(index, hospitalLeft) {
+            (function search(index, hospitalLeft, cooldownSoFar) {
+                if (cooldownSoFar >= cooldownBudget && cooldownSoFar > 0) return;
                 if (index < profiles.length) {
                     for (let count = 0; count <= maxUseful[index]; count++) {
                         counts[index] = count;
-                        search(index + 1, hospitalLeft - count * profiles[index].hospital);
+                        const cooldown = cooldownSoFar + count * profiles[index].cooldown;
+                        search(index + 1, hospitalLeft - count * profiles[index].hospital, cooldown);
+                        if (cooldown >= cooldownBudget) break;
                     }
                     counts[index] = 0;
                     return;
@@ -244,7 +265,7 @@
                     mostCounts = counts.slice();
                     most = { healed, rank };
                 }
-            })(0, hospitalMinutes);
+            })(0, hospitalMinutes, 0);
             return mostCounts && { items: pathOf(mostCounts), cooldown: most.rank.cooldown, life: most.healed };
         }
 
