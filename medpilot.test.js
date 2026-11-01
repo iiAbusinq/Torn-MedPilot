@@ -213,3 +213,16 @@ console.log('ok');
     assert.ok(wait > 1.9 && wait <= 2.1, `expected about two minutes, got ${wait}`);
     assert.equal(cost(wait), 10);
 }
+
+{
+    // Days of hospital with a deep armoury used to take seconds per render.
+    const stock = { 66: 200, 67: 200, 68: 200, 732: 200 };
+    const limits = { cooldownNow: 0, maxCooldown: 360 };
+    const started = Date.now();
+    const medout = plan(4320, 0, 0, MEDS, stock, 'a+', limits);
+    const full = plan(4320, 80, 0, MEDS, stock, 'a+', { ...limits, mostLife: true });
+    const took = Date.now() - started;
+    assert.match(medout.error, /Not possible with current med CD, wait/);
+    assert.match(full.error, /Not possible with current med CD, wait/);
+    assert.ok(took < 500, `three days of hospital planned in ${took}ms`);
+}

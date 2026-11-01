@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MedPilot
 // @namespace    https://github.com/iiAbusinq
-// @version      1.4.1
+// @version      1.5
 // @description  Cheapest medical items cooldown-wise: one button to leave hospital, one to leave hospital at full life. Own items on item.php, faction armoury on factions.php
 // @author       AlbertoStegeman
 // @license      MIT
@@ -161,6 +161,9 @@
             profileByEffect.set(effectKey, profile);
         }
         const profiles = [...profileByEffect.values()];
+        // Past this much cooldown even the largest last item would cross the limit.
+        const largestCooldown = Math.max(...profiles.map(profile => profile.cooldown));
+        const cooldownBudget = maxCooldown - cooldownNow + largestCooldown;
 
         const counts = new Array(profiles.length).fill(0);
         const rankOf = () => {
@@ -189,9 +192,20 @@
                 Math.ceil(hospitalNeeded / Math.max(profile.hospital, 1)),
                 Math.ceil(lifePercent / Math.max(profile.life, 1)))));
             let bestCounts = null, bestRank = null, cooldownBlocked = false;
+            const budget = maxCooldown - currentCooldown + largestCooldown;
+            // What the remaining profiles could still heal, to tell a blocked branch from a short one.
+            const hospitalCap = [0], lifeCap = [0];
+            for (let index = profiles.length - 1; index >= 0; index--) {
+                hospitalCap.unshift(hospitalCap[0] + maxUseful[index] * profiles[index].hospital);
+                lifeCap.unshift(lifeCap[0] + maxUseful[index] * profiles[index].life);
+            }
             counts.fill(0);
             (function search(index, hospitalLeft, lifeLeft, cooldownSoFar) {
                 if (bestRank && cooldownSoFar > bestRank.cooldown) return;
+                if (cooldownSoFar >= budget && cooldownSoFar > 0) {
+                    if (hospitalLeft <= hospitalCap[index] && lifeLeft <= lifeCap[index] + 1e-9) cooldownBlocked = true;
+                    return;
+                }
                 if (hospitalLeft <= 0 && lifeLeft <= 1e-9) {
                     const rank = rankOf();
                     const cooldownBeforeLastItem = currentCooldown + rank.cooldown - rank.largestStep;
@@ -209,10 +223,14 @@
                 const profile = profiles[index];
                 for (let count = 0; count <= maxUseful[index]; count++) {
                     counts[index] = count;
-                    search(index + 1,
-                        hospitalLeft - count * profile.hospital,
-                        lifeLeft - count * profile.life,
-                        cooldownSoFar + count * profile.cooldown);
+                    const cooldown = cooldownSoFar + count * profile.cooldown;
+                    search(index + 1, hospitalLeft - count * profile.hospital, lifeLeft - count * profile.life, cooldown);
+                    // Every larger count is pruned the same way, so only record whether one would complete.
+                    if (cooldown >= budget) {
+                        if (hospitalLeft <= hospitalCap[index] && lifeLeft <= lifeCap[index] + 1e-9) cooldownBlocked = true;
+                        break;
+                    }
+                    if (bestRank && cooldown > bestRank.cooldown) break;
                 }
                 counts[index] = 0;
             })(0, hospitalNeeded, lifePercent, 0);
@@ -226,11 +244,14 @@
                 Math.ceil(lifePercent / Math.max(profile.life, 1)))));
             let mostCounts = null, most = null;
             counts.fill(0);
-            (function search(index, hospitalLeft) {
+            (function search(index, hospitalLeft, cooldownSoFar) {
+                if (cooldownSoFar >= cooldownBudget && cooldownSoFar > 0) return;
                 if (index < profiles.length) {
                     for (let count = 0; count <= maxUseful[index]; count++) {
                         counts[index] = count;
-                        search(index + 1, hospitalLeft - count * profiles[index].hospital);
+                        const cooldown = cooldownSoFar + count * profiles[index].cooldown;
+                        search(index + 1, hospitalLeft - count * profiles[index].hospital, cooldown);
+                        if (cooldown >= cooldownBudget) break;
                     }
                     counts[index] = 0;
                     return;
@@ -244,7 +265,7 @@
                     mostCounts = counts.slice();
                     most = { healed, rank };
                 }
-            })(0, hospitalMinutes);
+            })(0, hospitalMinutes, 0);
             return mostCounts && { items: pathOf(mostCounts), cooldown: most.rank.cooldown, life: most.healed };
         }
 
@@ -348,6 +369,8 @@
     const pdaApiKey = isPda && !PDA_API_KEY.includes('###') ? PDA_API_KEY.trim() : '';
 
     function createSettingsStore() {
+        // Settings are saved on every load, so only a new install has none yet.
+        const newInstall = localStorage.getItem(SETTINGS_KEY) === null;
         const stored = (() => {
             try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch { return {}; }
         })();
@@ -360,7 +383,8 @@
         if (!isPda && !secureApiKey && legacyApiKey) GM_setValue(API_KEY_KEY, legacyApiKey);
         localStorage.removeItem(API_CACHE_KEY);
         const settings = {
-            bloodType: 'o-', excludeOwn: legacyExclude.slice(), excludeArmoury: legacyExclude.slice(),
+            // null: not chosen yet. A new install must pick its own type; existing users keep theirs.
+            bloodType: newInstall ? null : 'o-', excludeOwn: legacyExclude.slice(), excludeArmoury: legacyExclude.slice(),
             mostLife: false, lifeTarget: 100,
             ...stored,
             apiKey: isPda ? pdaApiKey : secureApiKey || legacyApiKey,
@@ -823,6 +847,7 @@
             </div>
             <label>Your blood type
                 <select id="cm-blood">
+                    <option value="unset" disabled hidden>Choose your own blood type…</option>
                     <option value="">no blood bags</option>
                     ${Object.keys(ALLOWED_BLOOD).map(b => `<option value="${b}">${b.toUpperCase()}</option>`).join('')}
                 </select></label>
@@ -970,7 +995,8 @@
                 || (fromPage ? (accountData.knownMaxCooldown ??= storedMaxCooldown()) : accountData.knownMaxCooldown);
             const used = minsUntil(predictedCooldown(cooldownStamp, cooldownTarget));
             const maxShown = readMax || DEFAULT_MAX_COOLDOWN;
-            const maxCooldown = readMax || Infinity;
+            // Unknown: plan with the base maximum. Perks only raise it, so Torn never refuses the plan.
+            const maxCooldown = readMax || DEFAULT_MAX_COOLDOWN;
             const life = sidebarLife && lifeTarget
                 ? { current: Math.max(sidebarLife.current, lifeTarget.current), maximum: sidebarLife.maximum }
                 : sidebarLife;
@@ -1254,7 +1280,8 @@
         $('toggle').classList.add('cm-open');
         const keyInput = $('key');
         if (keyInput) keyInput.value = settings.apiKey;
-        $('blood').value = settings.bloodType;
+        $('blood').value = settings.bloodType ?? 'unset';
+        markBloodRequired();
         $('most-life').value = settings.mostLife ? 'yes' : 'no';
         $('life-target').value = settings.lifeTarget;
         const excluded = fromArmoury ? settings.excludeArmoury : settings.excludeOwn;
@@ -1263,6 +1290,10 @@
             chip.classList.toggle('cm-on', ids.every(id => !excluded.includes(id)));
         });
         if (focusKey && keyInput) keyInput.focus();
+    }
+
+    function markBloodRequired() {
+        $('blood').classList.toggle('cm-required', $('blood').value === 'unset');
     }
 
     function closeSettings() {
@@ -1281,6 +1312,17 @@
             actionLabel: 'Add API key',
             dismissible: false,
             onAction: () => openSettings(true),
+        });
+    }
+
+    // Only asked once a key is in, so the key notice always comes first.
+    const needsBloodType = () => Boolean(settings.apiKey) && settings.bloodType === null;
+
+    function showBloodTypeNotice() {
+        setNotice('Set your own blood type so MedPilot only plans blood bags you can take.', false, {
+            actionLabel: 'Choose blood type',
+            dismissible: false,
+            onAction: () => { openSettings(); $('blood').focus(); },
         });
     }
 
@@ -1322,6 +1364,7 @@
     }
 
     function render() {
+        if (needsBloodType()) showBloodTypeNotice();
         panelView.renderNotice();
         if (!inventory) {
             const status = readCurrentStatus();
@@ -1347,6 +1390,12 @@
             const detail = useController.recoveryDetail();
             setButton(goBtn, 'Medout', detail, false);
             setButton(fullBtn, fullLabel(), detail, false);
+            return;
+        }
+        if (needsBloodType()) {
+            nextMedout = nextFullLife = null;
+            setButton(goBtn, 'Medout', 'Choose your blood type first', false);
+            setButton(fullBtn, fullLabel(), 'Choose your blood type first', false);
             return;
         }
 
@@ -1513,6 +1562,7 @@
             render();
         }
     });
+    $('blood').addEventListener('change', markBloodRequired);
     $('toggle').addEventListener('click', () => {
         if ($('settings').classList.contains('cm-open')) closeSettings();
         else openSettings();
@@ -1520,7 +1570,7 @@
     $('save').addEventListener('click', async () => {
         const keyInput = $('key');
         if (keyInput) settings.apiKey = keyInput.value.trim();
-        settings.bloodType = $('blood').value;
+        settings.bloodType = $('blood').value === 'unset' ? null : $('blood').value;
         settings.mostLife = $('most-life').value === 'yes';
         const typed = String($('life-target').value).trim();
         const target = Math.round(Number(typed));
@@ -1702,6 +1752,8 @@
 .cm-panel .cm-settings input,.cm-panel .cm-settings select{width:100%;box-sizing:border-box;
     margin-top:4px;padding:6px;background:#222;border:1px solid #555;border-radius:3px;color:#ddd;
     font:12px Arial,sans-serif}
+.cm-panel .cm-settings select.cm-required{border-color:#c9a14a;color:#e0c27a;
+    box-shadow:0 0 0 2px rgba(201,161,74,.25)}
 .cm-panel .cm-field{flex:1 1 calc(100% - 100px);font-size:11px;color:#949494}
 .cm-panel .cm-toggles{display:flex;gap:6px;margin-top:7px;flex-wrap:wrap}
 .cm-panel .cm-chip{flex:none;padding:6px 13px;border:1px solid #4e4e4e;border-radius:13px;

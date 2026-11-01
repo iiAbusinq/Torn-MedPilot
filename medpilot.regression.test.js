@@ -22,7 +22,8 @@ async function browser({ stock = { 68: 3, 739: 2 }, current = 1300, maximum = 20
     medicalIcon = true, factionPerks = [], storage = new Map(), startNow = 1_800_000_000_000,
     timezoneOffsetMinutes = 0, secureStorage = null, accessLevel = 3,
     inventoryTimestamp = Math.floor(startNow / 1000), armouryDomLoaded = true,
-    unusableArmouryIds = [], pda = false, pdaApiKey = null, sidebarLife = null, active = true } = {}) {
+    unusableArmouryIds = [], pda = false, pdaApiKey = null, sidebarLife = null, active = true,
+    freshInstall = false } = {}) {
     settings = { apiKey: 'test-key', ...settings };
     let now = startNow;
     let holdStock = false, holdNextApi = false, stockReads = 0, apiReads = 0;
@@ -95,7 +96,7 @@ async function browser({ stock = { 68: 3, 739: 2 }, current = 1300, maximum = 20
         },
     };
     const response = body => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => body });
-    storage.set('cheap_medout_v2', JSON.stringify(settings));
+    if (!freshInstall) storage.set('cheap_medout_v2', JSON.stringify(settings));
     secureStorage ||= storage.secureStorage || new Map();
     storage.secureStorage = secureStorage;
     const sessionStorage = {};
@@ -1360,4 +1361,67 @@ test('the life target defaults to 100, stays within 50 to 100 and falls back to 
         await b.saveKey('test-key'); await b.flush();
         assert.equal(JSON.parse(b.storage.get('cheap_medout_v2')).lifeTarget, stored, `${typed || 'empty'} → ${stored}`);
     }
+});
+
+test('two days of hospital with a deep armoury renders without freezing the page', async () => {
+    const b = await browser({ armoury: true, hospitalMinutes: 2 * 24 * 60, current: 980, maximum: 2450,
+        stock: { 66: 200, 67: 200, 68: 200, 739: 200 }, settings: { bloodType: 'o-' } });
+    const started = Date.now();
+    b.tick(1);
+    const took = Date.now() - started;
+    assert.equal(b.title('go'), 'Medout');
+    assert.match(b.detail('go'), /^Not possible with current med CD, wait 22h\s5\dm$/);
+    assert.equal(b.title('full'), 'Full life');
+    assert.match(b.detail('full'), /^Not possible with current med CD, wait 22h\s5\dm$/);
+    assert.ok(took < 500, `one render took ${took}ms`);
+});
+
+test('a new install asks for its own blood type once the key is in', async () => {
+    const b = await browser({ freshInstall: true, hospitalMinutes: 20,
+        secureStorage: new Map([['cheap_medout_api_key_v1', 'test-key']]) });
+    assert.equal(b.detail('go'), 'Choose your blood type first');
+    assert.equal(b.detail('full'), 'Choose your blood type first');
+    assert.match(b.text('flash-text'), /your own blood type/);
+    assert.equal(b.text('flash-action'), 'Choose blood type');
+    assert.equal(b.element('flash-x').hidden, true, 'cannot be dismissed');
+
+    b.button('flash-action').click();
+    assert.equal(b.element('blood').value, 'unset', 'nothing chosen for them');
+    assert.ok(b.element('blood').classList.contains('cm-required'));
+    assert.equal(b.element('blood').focused, true);
+
+    await b.element('save').click(); await b.flush();
+    assert.equal(JSON.parse(b.storage.get('cheap_medout_v2')).bloodType, null, 'saving without a choice keeps asking');
+    assert.equal(b.text('flash-action'), 'Choose blood type');
+
+    await b.saveKey('test-key'); await b.flush();
+    assert.equal(JSON.parse(b.storage.get('cheap_medout_v2')).bloodType, 'o-');
+    assert.match(b.title('go'), /^Medout: /);
+    assert.notEqual(b.text('flash-action'), 'Choose blood type');
+});
+
+test('a new install without a key is asked for the key before the blood type', async () => {
+    const b = await browser({ freshInstall: true, hospitalMinutes: 20, settings: { apiKey: '' } });
+    assert.equal(b.text('flash-action'), 'Add API key');
+    assert.notEqual(b.detail('go'), 'Choose your blood type first');
+});
+
+test('an existing install keeps its saved blood type without being asked', async () => {
+    const b = await browser({ hospitalMinutes: 20 });
+    assert.equal(JSON.parse(b.storage.get('cheap_medout_v2')).bloodType, 'o-');
+    assert.match(b.title('go'), /^Medout: /);
+    assert.notEqual(b.text('flash-action'), 'Choose blood type');
+});
+
+test('an unknown maximum cooldown plans with the base 6h instead of no limit', async () => {
+    const b = await browser({ medicalIcon: false, hospitalMinutes: 10 * 24 * 60,
+        stock: { 66: 200, 67: 200, 68: 200, 739: 200 }, settings: { bloodType: 'o-' } });
+    b.failApi(5);
+    await b.button('refresh').click();
+    assert.match(b.text('cd'), /\/ 6h\s0m\?$/, 'the maximum is unknown');
+    const started = Date.now();
+    b.tick(1);
+    const took = Date.now() - started;
+    assert.match(b.detail('go'), /^Not possible with current med CD, wait /, 'no plan beyond what Torn allows');
+    assert.ok(took < 500, `one render took ${took}ms`);
 });
