@@ -995,7 +995,8 @@
                 || (fromPage ? (accountData.knownMaxCooldown ??= storedMaxCooldown()) : accountData.knownMaxCooldown);
             const used = minsUntil(predictedCooldown(cooldownStamp, cooldownTarget));
             const maxShown = readMax || DEFAULT_MAX_COOLDOWN;
-            const maxCooldown = readMax || Infinity;
+            // Unknown: plan with the base maximum. Perks only raise it, so Torn never refuses the plan.
+            const maxCooldown = readMax || DEFAULT_MAX_COOLDOWN;
             const life = sidebarLife && lifeTarget
                 ? { current: Math.max(sidebarLife.current, lifeTarget.current), maximum: sidebarLife.maximum }
                 : sidebarLife;

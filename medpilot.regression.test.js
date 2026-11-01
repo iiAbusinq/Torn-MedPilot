@@ -1412,3 +1412,16 @@ test('an existing install keeps its saved blood type without being asked', async
     assert.match(b.title('go'), /^Medout: /);
     assert.notEqual(b.text('flash-action'), 'Choose blood type');
 });
+
+test('an unknown maximum cooldown plans with the base 6h instead of no limit', async () => {
+    const b = await browser({ medicalIcon: false, hospitalMinutes: 10 * 24 * 60,
+        stock: { 66: 200, 67: 200, 68: 200, 739: 200 }, settings: { bloodType: 'o-' } });
+    b.failApi(5);
+    await b.button('refresh').click();
+    assert.match(b.text('cd'), /\/ 6h\s0m\?$/, 'the maximum is unknown');
+    const started = Date.now();
+    b.tick(1);
+    const took = Date.now() - started;
+    assert.match(b.detail('go'), /^Not possible with current med CD, wait /, 'no plan beyond what Torn allows');
+    assert.ok(took < 500, `one render took ${took}ms`);
+});
