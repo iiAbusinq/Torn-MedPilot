@@ -251,6 +251,20 @@ async function browser({ stock = { 68: 3, 739: 2 }, current = 1300, maximum = 20
     };
 }
 
+test('success notices are green and refusals are not', async () => {
+    const b = await browser({ hospitalMinutes: 20, stock: { 68: 1 } });
+    await b.saveKey('test-key');
+    b.tick();
+    assert.match(b.text('flash-text'), /Changes saved/);
+    assert.equal(b.element('flash').className, 'cm-flash cm-ok');
+
+    b.button('go').click();
+    b.requests[0].finish(false); await b.flush();
+    b.tick();
+    assert.equal(b.text('flash-text'), 'Refused');
+    assert.equal(b.element('flash').className, 'cm-flash');
+});
+
 test('saving an API key keeps it out of the page localStorage', async () => {
     const b = await browser();
 

@@ -898,16 +898,17 @@
         let noticeAction = null;
         let noticeActionLabel = '';
 
-        const setNotice = (message, ok, options = {}) => {
+        // ok: shown in green as a success; otherwise it's a warning.
+        const setNotice = (message, { ok = false, dismissible = true, onAction = null, actionLabel = '' } = {}) => {
             notice = message;
-            noticeOk = !!ok;
-            noticeDismissible = options.dismissible !== false;
-            noticeAction = options.onAction || null;
-            noticeActionLabel = options.actionLabel || '';
+            noticeOk = ok;
+            noticeDismissible = dismissible;
+            noticeAction = onAction;
+            noticeActionLabel = actionLabel;
         };
         const dismissNotice = () => {
             if (!noticeDismissible) return;
-            setNotice('', true);
+            setNotice('');
         };
         const renderNotice = () => {
             find('flash-text').textContent = notice;
@@ -982,7 +983,7 @@
                 ? 'Unable to confirm use — refresh to check' : 'Checking item use…');
 
         // fromPage false reuses the last sidebar read, so an unfocused tick never touches the page.
-        function readCurrentStatus(fromPage = true) {
+        function readCurrentStatus({ fromPage = true } = {}) {
             const icons = fromPage ? (lastIcons = readIcons()) : lastIcons;
             const hospitalStamp = icons.hospital ? icons.hospital.timerExpiresAt : 0;
             const cooldownStamp = icons.medical ? icons.medical.timerExpiresAt : 0;
@@ -1044,14 +1045,14 @@
         function startRecovery(batch, delay = USE_CONFIRMATION_TIMEOUT_MS) {
             if (recoveryState || batch !== activeBatch) return;
             recoveryState = { batch, attempts: 0, nextCheckAt: Date.now() + delay, check: null };
-            setNotice('Checking item use — further uses are paused.', false);
+            setNotice('Checking item use — further uses are paused.');
         }
 
         function showRecoveryStatus() {
             const stopped = recoveryState.attempts >= MAX_AUTO_RECOVERY_CHECKS;
             setNotice(stopped
                 ? 'Unable to confirm item use. Uses are paused; refresh to check again.'
-                : 'Item use is not confirmed yet. Checking again in 5 seconds.', false);
+                : 'Item use is not confirmed yet. Checking again in 5 seconds.');
         }
 
         function updateRecovery() {
@@ -1128,7 +1129,7 @@
             inventoryRevision++;
             activeBatch = null;
             recoveryState = null;
-            setNotice('Item use confirmed.', true);
+            setNotice('Item use confirmed.', { ok: true });
         }
 
         async function checkRecovery() {
@@ -1137,7 +1138,7 @@
             const check = { startedAt: Date.now(), revision: inventoryRevision };
             currentRecovery.check = check;
             currentRecovery.attempts++;
-            setNotice('Checking item use — further uses are paused.', false);
+            setNotice('Checking item use — further uses are paused.');
             try {
                 const stock = await readInventory();
                 const isCurrent = recoveryState === currentRecovery
@@ -1234,7 +1235,7 @@
                 activeBatch = null;
                 if (recoveryState?.batch === batch) {
                     recoveryState = null;
-                    if (request.status === 'success') setNotice('Item use confirmed.', true);
+                    if (request.status === 'success') setNotice('Item use confirmed.', { ok: true });
                 }
             }
             if (predictionExpiresAt) predictionExpiresAt = serverNow() + PREDICTION_GRACE_MS;
@@ -1245,7 +1246,7 @@
         async function useNext(item) {
             const inventory = getInventory();
             if (recoveryState || !item || !inventory || !(inventory.quantityById[item.id] > 0)) return;
-            setNotice('', true);
+            setNotice('');
             const icons = readIcons();
             const life = readLife();
             const batch = activeBatch ||= createUseBatch(icons, life);
@@ -1288,7 +1289,7 @@
         readInventory,
         readLife,
         recordInventoryUse,
-        refreshInventory: () => refresh(true),
+        refreshInventory: () => refresh({ quiet: true }),
         render: () => render(),
         serverNow,
         setInventory: value => { inventory = value; },
@@ -1335,12 +1336,12 @@
 
     function showRequiredKeyNotice(message = requiredInventoryMessage) {
         if (isPda) {
-            setNotice(`${message} Configure a Minimal key in Torn PDA's userscript settings.`, false, {
+            setNotice(`${message} Configure a Minimal key in Torn PDA's userscript settings.`, {
                 dismissible: false,
             });
             return;
         }
-        setNotice(message, false, {
+        setNotice(message, {
             actionLabel: 'Add API key',
             dismissible: false,
             onAction: () => openSettings(true),
@@ -1351,7 +1352,7 @@
     const needsBloodType = () => Boolean(settings.apiKey) && settings.bloodType === null;
 
     function showBloodTypeNotice() {
-        setNotice('Set your own blood type so MedPilot only plans blood bags you can take.', false, {
+        setNotice('Set your own blood type so MedPilot only plans blood bags you can take.', {
             actionLabel: 'Choose blood type',
             dismissible: false,
             onAction: () => { openSettings(); $('blood').focus(); },
@@ -1359,7 +1360,7 @@
     }
 
     function showArmouryLoadNotice(message = 'Load the faction medical inventory to calculate a plan.') {
-        setNotice(message, false, {
+        setNotice(message, {
             actionLabel: 'Load medical inventory',
             dismissible: false,
             onAction: loadArmouryInventory,
@@ -1371,7 +1372,7 @@
         if (fromArmoury && /already been used/i.test(text || '')) {
             showArmouryLoadNotice(`No ${item.name} left in the armoury. Reload the medical inventory to update the plan.`);
         } else {
-            setNotice(text || `${item.name} was refused.`, false);
+            setNotice(text || `${item.name} was refused.`);
         }
     }
 
@@ -1506,8 +1507,9 @@
         }
     }
 
+    // quiet: a background reload that keeps the buttons as they are while it loads.
     // manual: the user asked for it, so skip the hourly API caches and reload the armoury.
-    async function refresh(quiet, includeApi = true, manual = false) {
+    async function refresh({ quiet = false, manual = false } = {}) {
         if (useController.isRecovering()) {
             if (!quiet) await checkRecovery();
             return false;
@@ -1521,7 +1523,7 @@
         try {
             inventoryError = '';
             if (!settings.apiKey) clearApiData();
-            else if (includeApi && (!quiet || !accountData.perksKnown || accountData.hour !== apiHour())) {
+            else if (!quiet || !accountData.perksKnown || accountData.hour !== apiHour()) {
                 await refreshPerksAndLife(manual);
             }
             const stock = await readInventory({ manual });
@@ -1538,17 +1540,17 @@
             if (e.requiresManualInventoryLoad) showArmouryLoadNotice(
                 manual ? 'Could not load faction inventory — try again.' : undefined);
             else if (!settings.apiKey || e.code === 16) showRequiredKeyNotice();
-            else setNotice(e.message, false);
+            else setNotice(e.message);
             if (pageIsActive()) render();
             return false;
         }
     }
 
     async function loadArmouryInventory() {
-        setNotice('Loading faction medical inventory…', true, { dismissible: false });
+        setNotice('Loading faction medical inventory…', { ok: true, dismissible: false });
         render();
-        if (await refresh(false, true, true) && inventory) {
-            setNotice(`Loaded: ${inventorySummary()}`, true);
+        if (await refresh({ manual: true }) && inventory) {
+            setNotice(`Loaded: ${inventorySummary()}`, { ok: true });
             render();
         }
     }
@@ -1588,8 +1590,8 @@
     $('flash-x').addEventListener('click', () => { panelView.dismissNotice(); render(); });
 
     $('refresh').addEventListener('click', async () => {
-        if (await refresh(false, true, true) && inventory) {
-            setNotice(`Refreshed: ${inventorySummary()}`, true);
+        if (await refresh({ manual: true }) && inventory) {
+            setNotice(`Refreshed: ${inventorySummary()}`, { ok: true });
             render();
         }
     });
@@ -1620,7 +1622,7 @@
         closeSettings();
 
         if (settings.apiKey) {
-            setNotice('Checking API key…', true);
+            setNotice('Checking API key…', { ok: true });
             render();
             try {
                 await refreshPerksAndLife();
@@ -1628,14 +1630,14 @@
                 useController.bumpRevision();
                 const spare = accountData.accessLevel > requiredAccessLevel
                     ? ` This key is ${accountData.accessType}; ${requiredAccessName} would do.` : '';
-                setNotice(`Changes saved.${spare}`, true);
+                setNotice(`Changes saved.${spare}`, { ok: true });
             } catch (e) {
                 inventoryError = e.code === 16 ? requiredInventoryMessage : e.message;
                 const removed = e.apiKeyRemoved ? ' It was removed from this script.' : '';
                 if (e.requiresManualInventoryLoad) showArmouryLoadNotice();
                 else if (e.code === 16) showRequiredKeyNotice('Minimal API access is required.');
                 else setNotice((e.code === 2 ? 'That API key is not valid.'
-                    : `Key check failed: ${e.message}`) + removed, false);
+                    : `Key check failed: ${e.message}`) + removed);
             }
         } else {
             showRequiredKeyNotice();
@@ -1659,7 +1661,7 @@
         const wasMounted = mounted;
         ensureMounted();
         render();
-        if (wasMounted) refresh(!!inventory);
+        if (wasMounted) refresh({ quiet: !!inventory });
     }
 
     document.addEventListener('visibilitychange', onActivityChange);
@@ -1673,8 +1675,8 @@
     let loadedHour = apiHour();
     setInterval(() => {
         if (!inventory) return;
-        if (loadedHour !== apiHour()) { loadedHour = apiHour(); refresh(true); }
-        renderClocks(readCurrentStatus(pageIsActive()));
+        if (loadedHour !== apiHour()) { loadedHour = apiHour(); refresh({ quiet: true }); }
+        renderClocks(readCurrentStatus({ fromPage: pageIsActive() }));
     }, 100);
     onActivityChange();
     ensureMounted();
