@@ -655,44 +655,32 @@
         });
     }
 
-    function createInventoryService({ settings: currentSettings, request, fromArmoury: isArmoury,
-        apiHour, loadArmoury, pageIsActive: canReadPage }) {
+    // Shared by both inventories: every count must be a finite, non-negative number.
+    const validCounts = counts => counts && Object.values(counts)
+        .every(amount => Number.isFinite(amount) && amount >= 0);
+    const storedObject = key => {
+        const stored = GM_getValue(key, {});
+        return stored && typeof stored === 'object' ? stored : {};
+    };
+
+    // Your own items: read from the API, cached per hour, minus the uses made since that read.
+    function createOwnInventory({ settings: currentSettings, request, apiHour }) {
+        // The saved cache and uses live under 'user'; kept so existing saves still load.
+        const source = 'user';
         let identity = null;
-        let armourySnapshot = null;
-        const source = isArmoury ? 'faction' : 'user';
-        const validCounts = counts => counts && Object.values(counts)
-            .every(amount => Number.isFinite(amount) && amount >= 0);
         // Caches from before loaned items were tracked have no loanedById, so they are fetched again.
         const validCache = (entry, key, hour) => entry
             && entry.apiKey === key && entry.hour === hour && Number.isFinite(entry.timestamp)
             && validCounts(entry.quantityById) && validCounts(entry.loanedById);
-        const validArmouryCache = (entry, key) => entry
-            && entry.apiKey === key && entry.quantityById
-            && Object.values(entry.quantityById)
-                .every(amount => Number.isFinite(amount) && amount >= 0);
-        const inventoryCache = () => {
-            const stored = GM_getValue(INVENTORY_CACHE_KEY, {});
-            return stored && typeof stored === 'object' ? stored : {};
-        };
-        const storeArmourySnapshot = quantityById => {
-            armourySnapshot = { ...quantityById };
-            const cache = inventoryCache();
-            cache.faction = { apiKey: currentSettings.apiKey, quantityById: { ...armourySnapshot } };
-            GM_setValue(INVENTORY_CACHE_KEY, cache);
-        };
-        const storedUses = () => {
-            const stored = GM_getValue(INVENTORY_USE_KEY, {});
-            return stored && typeof stored === 'object' ? stored : {};
-        };
         const applyUses = (snapshot, key) => {
-            const uses = storedUses();
+            const uses = storedObject(INVENTORY_USE_KEY);
             let entry = uses[source];
             if (!entry || entry.apiKey !== key || entry.timestamp !== snapshot.timestamp) {
                 entry = { apiKey: key, timestamp: snapshot.timestamp, quantityById: {}, loanedById: {} };
                 uses[source] = entry;
                 GM_setValue(INVENTORY_USE_KEY, uses);
             }
-            identity = { source, apiKey: key, timestamp: snapshot.timestamp };
+            identity = { apiKey: key, timestamp: snapshot.timestamp };
             const left = (counts, used = {}) => Object.fromEntries(Object.entries(counts).map(([id, amount]) =>
                 [id, Math.max(0, amount - (used[id] || 0))]));
             // quantityById is everything the planner may spend; loanedById is the loaned part of it.
@@ -705,74 +693,22 @@
             return { quantityById, loanedById };
         };
         const recordUse = (itemId, change, loaned = false) => {
-            if (isArmoury) {
-                if (!armourySnapshot) return;
-                armourySnapshot[itemId] = Math.max(0, (armourySnapshot[itemId] || 0) - change);
-                storeArmourySnapshot(armourySnapshot);
-                return;
-            }
             if (!identity) return;
-            const uses = storedUses();
-            let entry = uses[identity.source];
+            const uses = storedObject(INVENTORY_USE_KEY);
+            let entry = uses[source];
             if (!entry || entry.apiKey !== identity.apiKey || entry.timestamp !== identity.timestamp) {
                 entry = { apiKey: identity.apiKey, timestamp: identity.timestamp, quantityById: {}, loanedById: {} };
-                uses[identity.source] = entry;
+                uses[source] = entry;
             }
             const used = loaned ? (entry.loanedById ||= {}) : entry.quantityById;
             used[itemId] = Math.max(0, (used[itemId] || 0) + change);
             GM_setValue(INVENTORY_USE_KEY, uses);
         };
-        const readArmouryDom = () => {
-            const list = document.querySelector(".armoury-tabs[id*='medical'] .item-list");
-            if (!list) return null;
-            const quantityById = {};
-            for (const row of list.querySelectorAll(':scope > li')) {
-                if (!row.querySelector('.use.active')) continue;
-                const image = row.querySelector('.img-wrap[data-itemid]');
-                const quantity = row.querySelector('.qty');
-                const id = Number(image?.dataset.itemid);
-                const amount = Number(quantity?.textContent);
-                if (Number.isFinite(id) && Number.isFinite(amount) && amount >= 0) {
-                    quantityById[id] = (quantityById[id] || 0) + amount;
-                }
-            }
-            return quantityById;
-        };
-        const readArmoury = async manual => {
-            if (manual) {
-                try {
-                    const response = await loadArmoury();
-                    if (!Array.isArray(response?.items)) {
-                        throw new Error('Unable to load the faction medical inventory.');
-                    }
-                    storeArmourySnapshot(foldStock(response.items));
-                } catch (failure) {
-                    failure.requiresManualInventoryLoad = true;
-                    throw failure;
-                }
-            } else if (!armourySnapshot) {
-                const domSnapshot = canReadPage() ? readArmouryDom() : null;
-                if (domSnapshot !== null) storeArmourySnapshot(domSnapshot);
-                else {
-                    const cached = inventoryCache().faction;
-                    if (validArmouryCache(cached, currentSettings.apiKey)) {
-                        armourySnapshot = { ...cached.quantityById };
-                    }
-                }
-            }
-            if (!armourySnapshot) {
-                const failure = new Error('Faction medical inventory is not loaded.');
-                failure.requiresManualInventoryLoad = true;
-                throw failure;
-            }
-            return { quantityById: { ...armourySnapshot }, loanedById: {} };
-        };
         const read = async ({ manual = false } = {}) => {
             if (!currentSettings.apiKey) throw new Error(requiredInventoryMessage);
-            if (isArmoury) return readArmoury(manual);
             const key = currentSettings.apiKey;
             const hour = apiHour();
-            const cache = inventoryCache();
+            const cache = storedObject(INVENTORY_CACHE_KEY);
             let snapshot = !manual && validCache(cache[source], key, hour) ? cache[source] : null;
             if (!snapshot) {
                 const response = await request('v2/user/inventory?cat=Medical&limit=250', key);
@@ -792,16 +728,85 @@
             }
             return applyUses(snapshot, key);
         };
-        const clearIdentity = () => { identity = null; armourySnapshot = null; };
+        const clearIdentity = () => { identity = null; };
 
         return { clearIdentity, read, recordUse };
     }
 
-    const inventoryService = createInventoryService({
-        settings, request: api, fromArmoury, apiHour, pageIsActive,
-        loadArmoury: () => tornPost('factions.php',
-            { step: 'armouryTabContent', type: 'medical', start: '0' }),
-    });
+    // The faction armoury: read from the open armoury page, or loaded on request, and kept per API key.
+    function createArmouryInventory({ settings: currentSettings, loadArmoury, pageIsActive: canReadPage }) {
+        let armourySnapshot = null;
+        const validArmouryCache = (entry, key) => entry
+            && entry.apiKey === key && validCounts(entry.quantityById);
+        const storeArmourySnapshot = quantityById => {
+            armourySnapshot = { ...quantityById };
+            const cache = storedObject(INVENTORY_CACHE_KEY);
+            cache.faction = { apiKey: currentSettings.apiKey, quantityById: { ...armourySnapshot } };
+            GM_setValue(INVENTORY_CACHE_KEY, cache);
+        };
+        const recordUse = (itemId, change) => {
+            if (!armourySnapshot) return;
+            armourySnapshot[itemId] = Math.max(0, (armourySnapshot[itemId] || 0) - change);
+            storeArmourySnapshot(armourySnapshot);
+        };
+        const readArmouryDom = () => {
+            const list = document.querySelector(".armoury-tabs[id*='medical'] .item-list");
+            if (!list) return null;
+            const quantityById = {};
+            for (const row of list.querySelectorAll(':scope > li')) {
+                if (!row.querySelector('.use.active')) continue;
+                const image = row.querySelector('.img-wrap[data-itemid]');
+                const quantity = row.querySelector('.qty');
+                const id = Number(image?.dataset.itemid);
+                const amount = Number(quantity?.textContent);
+                if (Number.isFinite(id) && Number.isFinite(amount) && amount >= 0) {
+                    quantityById[id] = (quantityById[id] || 0) + amount;
+                }
+            }
+            return quantityById;
+        };
+        const read = async ({ manual = false } = {}) => {
+            if (!currentSettings.apiKey) throw new Error(requiredInventoryMessage);
+            if (manual) {
+                try {
+                    const response = await loadArmoury();
+                    if (!Array.isArray(response?.items)) {
+                        throw new Error('Unable to load the faction medical inventory.');
+                    }
+                    storeArmourySnapshot(foldStock(response.items));
+                } catch (failure) {
+                    failure.requiresManualInventoryLoad = true;
+                    throw failure;
+                }
+            } else if (!armourySnapshot) {
+                const domSnapshot = canReadPage() ? readArmouryDom() : null;
+                if (domSnapshot !== null) storeArmourySnapshot(domSnapshot);
+                else {
+                    const cached = storedObject(INVENTORY_CACHE_KEY).faction;
+                    if (validArmouryCache(cached, currentSettings.apiKey)) {
+                        armourySnapshot = { ...cached.quantityById };
+                    }
+                }
+            }
+            if (!armourySnapshot) {
+                const failure = new Error('Faction medical inventory is not loaded.');
+                failure.requiresManualInventoryLoad = true;
+                throw failure;
+            }
+            return { quantityById: { ...armourySnapshot }, loanedById: {} };
+        };
+        const clearIdentity = () => { armourySnapshot = null; };
+
+        return { clearIdentity, read, recordUse };
+    }
+
+    const inventoryService = fromArmoury
+        ? createArmouryInventory({
+            settings, pageIsActive,
+            loadArmoury: () => tornPost('factions.php',
+                { step: 'armouryTabContent', type: 'medical', start: '0' }),
+        })
+        : createOwnInventory({ settings, request: api, apiHour });
     const readInventory = inventoryService.read;
     const recordInventoryUse = inventoryService.recordUse;
 
@@ -922,10 +927,10 @@
             find('flash-action').textContent = noticeActionLabel;
             find('flash-action').hidden = !noticeAction;
         };
-        const setButton = (button, title, detail, enabled, hint) => {
+        const setButton = (button, title, detail, { enabled = false, hint = '' } = {}) => {
             button.querySelector('.t1').textContent = title;
             button.querySelector('.t2').textContent = detail || '';
-            buttonHints.get(button).innerHTML = hint || '';
+            buttonHints.get(button).innerHTML = hint;
             button.disabled = !enabled;
         };
         const renderClocks = ({ now, hospitalExact, used, maxCooldown, readMax }) => {
@@ -1310,7 +1315,7 @@
 
     const panelBelongsOnPage = () => !fromArmoury || /tab=armou?ry/i.test(location.hash);
 
-    function openSettings(focusKey = false) {
+    function openSettings({ focusKey = false } = {}) {
         $('settings').classList.add('cm-open');
         $('toggle').classList.add('cm-open');
         const keyInput = $('key');
@@ -1347,7 +1352,7 @@
         setNotice(message, {
             actionLabel: 'Add API key',
             dismissible: false,
-            onAction: () => openSettings(true),
+            onAction: () => openSettings({ focusKey: true }),
         });
     }
 
@@ -1393,120 +1398,120 @@
         if (mounted) return;
         mounted = true;
         if (pageIsActive()) refresh();
-        else {
-            setButton(goBtn, 'Medout', 'Focus the page to update', false);
-            setButton(fullBtn, fullLabel(), 'Focus the page to update', false);
-        }
+        else showUnavailable('Focus the page to update');
+    }
+
+    // Both buttons say why nothing can be offered right now.
+    function showUnavailable(detail) {
+        nextMedout = nextFullLife = null;
+        setButton(goBtn, 'Medout', detail);
+        setButton(fullBtn, fullLabel(), detail);
+    }
+
+    // What every plan in one render shares: the status, the limits and the items it may spend.
+    function planContext(status) {
+        const { now, life, missingLife, used, maxCooldown } = status;
+        const usable = usablePool();
+        const limits = { cooldownNow: used, maxCooldown };
+        return {
+            ...status,
+            limits,
+            missingTarget: life ? missingToTarget(life, settings.lifeTarget) : missingLife,
+            toNextLife: accountData.lifeRegen
+                ? accountData.lifeRegen.interval - (now / 1000) % accountData.lifeRegen.interval : Infinity,
+            planFor: (hospitalMinutes, lifePercent, options = limits) => plan(hospitalMinutes, lifePercent,
+                effectiveness(), usable, inventory.quantityById, settings.bloodType, options),
+        };
+    }
+
+    function waitHint(context, res, lifePercent) {
+        const { now, life, hospitalExact, missingTarget, toNextLife } = context;
+        const planAfter = waitMinutes => {
+            const later = lifeAfterWaiting(life, waitMinutes, accountData.lifeRegen, toNextLife);
+            const missing = !lifePercent ? 0
+                : later ? missingToTarget(later, settings.lifeTarget)
+                : missingTarget;
+            return context.planFor(Math.max(0, Math.ceil(hospitalExact - waitMinutes)), missing);
+        };
+        const cooldownAfter = waitMinutes => {
+            const cheaper = planAfter(waitMinutes);
+            return cheaper.items ? cheaper.cooldown : Infinity;
+        };
+        const wait = firstCheaperWait(cooldownAfter, HINT_MAX_WAIT, res.cooldown);
+        if (wait === null) return '';
+        const cheaper = planAfter(wait);
+        const saved = res.cooldown - cheaper.cooldown;
+        if (saved < HINT_MIN_SAVING) return '';
+        return `${icon('hour')}<span>Wait <span class="cm-wait-time" data-until="${now + wait * 60000}">`
+            + `${asClock(wait, Math.floor)}</span> → `
+            + `<strong>${pathLabel(cheaper.items) || 'No items'}</strong> · ${cheaper.cooldown}m CD</span>`;
+    }
+
+    function offerPlan(context, btn, label, res, lifePercent) {
+        if (res.error) { setButton(btn, label, res.error); return null; }
+        if (!res.items.length) { setButton(btn, label, 'Nothing to do'); return null; }
+        const detail = res.items.length === 1
+            ? `${res.cooldown}m cooldown`
+            : `${pathLabel(res.items)} · ${res.cooldown}m CD`;
+        setButton(btn, `${label}: ${res.items[0].name}`, detail,
+            { enabled: true, hint: waitHint(context, res, lifePercent) });
+        return res.items[0];
+    }
+
+    // Shown in place of full life only when the med CD blocks it and the most life still clears hospital.
+    function offerMostLife(context, res) {
+        const { items, cooldown, fullLifeIn } = res.mostLife;
+        const detail = items.length === 1 ? `${cooldown}m cooldown` : `${pathLabel(items)} · ${cooldown}m CD`;
+        const fullIn = fullLifeIn === undefined ? `${fullLabel()} never fits your max med CD`
+            : `${fullLabel()} available in <span class="cm-wait-time" data-until="${Math.round(context.now + fullLifeIn * 60000)}">`
+                + `${asClock(fullLifeIn, Math.floor)}</span>`;
+        // Floored so the button never promises more than the heal gives; the tolerance absorbs float noise.
+        const reaches = Math.floor(100 - context.missingLife + res.mostLife.life + FLOAT_TOLERANCE);
+        setButton(fullBtn, `Most life → ${reaches}%: ${items[0].name}`, detail,
+            { enabled: true, hint: `${icon('hour')}<span>${fullIn}</span>` });
+        fullBtn.classList.add('cm-most');
+        return items[0];
     }
 
     function render() {
         if (needsBloodType()) showBloodTypeNotice();
         panelView.renderNotice();
-        if (!inventory) {
-            const status = readCurrentStatus();
-            renderClocks(status);
-            $('life').textContent = status.sidebarLife
-                ? `${status.sidebarLife.current}/${status.sidebarLife.maximum}` : '—';
-            nextMedout = null;
-            nextFullLife = null;
-            const detail = inventoryError || (settings.apiKey ? 'loading inventory…' : requiredInventoryMessage);
-            setButton(goBtn, 'Medout', detail, false);
-            setButton(fullBtn, fullLabel(), detail, false);
-            return;
-        }
-        updateRecovery();
+        if (inventory) updateRecovery();
         const status = readCurrentStatus();
-        const { now, hospitalExact, hospitalLeft, missingLife, life, sidebarLife, used,
-            maxCooldown } = status;
-
+        const { sidebarLife, hospitalLeft, hospitalExact } = status;
         renderClocks(status);
         $('life').textContent = sidebarLife ? `${sidebarLife.current}/${sidebarLife.maximum}` : '—';
+        if (!inventory) {
+            showUnavailable(inventoryError || (settings.apiKey ? 'loading inventory…' : requiredInventoryMessage));
+            return;
+        }
         if (useController.isRecovering()) {
-            nextMedout = nextFullLife = null;
-            const detail = useController.recoveryDetail();
-            setButton(goBtn, 'Medout', detail, false);
-            setButton(fullBtn, fullLabel(), detail, false);
+            showUnavailable(useController.recoveryDetail());
             return;
         }
         if (needsBloodType()) {
-            nextMedout = nextFullLife = null;
-            setButton(goBtn, 'Medout', 'Choose your blood type first', false);
-            setButton(fullBtn, fullLabel(), 'Choose your blood type first', false);
+            showUnavailable('Choose your blood type first');
             return;
         }
 
-        const missingTarget = life ? missingToTarget(life, settings.lifeTarget) : missingLife;
-        const toNextLife = accountData.lifeRegen
-            ? accountData.lifeRegen.interval - (now / 1000) % accountData.lifeRegen.interval : Infinity;
-
-        const waitHint = (res, lifePercent) => {
-            const planAfter = waitMinutes => {
-                const later = lifeAfterWaiting(life, waitMinutes, accountData.lifeRegen, toNextLife);
-                const missing = !lifePercent ? 0
-                    : later ? missingToTarget(later, settings.lifeTarget)
-                    : missingTarget;
-                return plan(Math.max(0, Math.ceil(hospitalExact - waitMinutes)), missing,
-                    effectiveness(), usable, inventory.quantityById, settings.bloodType, limits);
-            };
-            const cooldownAfter = waitMinutes => {
-                const cheaper = planAfter(waitMinutes);
-                return cheaper.items ? cheaper.cooldown : Infinity;
-            };
-            const wait = firstCheaperWait(cooldownAfter, HINT_MAX_WAIT, res.cooldown);
-            if (wait === null) return '';
-            const cheaper = planAfter(wait);
-            const saved = res.cooldown - cheaper.cooldown;
-            if (saved < HINT_MIN_SAVING) return '';
-            return `${icon('hour')}<span>Wait <span class="cm-wait-time" data-until="${now + wait * 60000}">`
-                + `${asClock(wait, Math.floor)}</span> → `
-                + `<strong>${pathLabel(cheaper.items) || 'No items'}</strong> · ${cheaper.cooldown}m CD</span>`;
-        };
-
-        const offer = (btn, label, res, lifePercent) => {
-            if (res.error) { setButton(btn, label, res.error, false); return null; }
-            if (!res.items.length) { setButton(btn, label, 'Nothing to do', false); return null; }
-            const detail = res.items.length === 1
-                ? `${res.cooldown}m cooldown`
-                : `${pathLabel(res.items)} · ${res.cooldown}m CD`;
-            setButton(btn, `${label}: ${res.items[0].name}`, detail, true, waitHint(res, lifePercent));
-            return res.items[0];
-        };
-
-        const usable = usablePool();
-        const limits = { cooldownNow: used, maxCooldown };
-
+        const context = planContext(status);
         nextMedout = null;
-        if (hospitalLeft <= 0) setButton(goBtn, 'Medout', 'Not in hospital', false);
-        else nextMedout = offer(goBtn, 'Medout',
-            plan(hospitalLeft, 0, effectiveness(), usable, inventory.quantityById, settings.bloodType, limits), 0);
-
-        // Shown in place of full life only when the med CD blocks it and the most life still clears hospital.
-        const offerMostLife = res => {
-            const { items, cooldown } = res.mostLife;
-            const detail = items.length === 1 ? `${cooldown}m cooldown` : `${pathLabel(items)} · ${cooldown}m CD`;
-            const { fullLifeIn } = res.mostLife;
-            const fullIn = fullLifeIn === undefined ? `${fullLabel()} never fits your max med CD`
-                : `${fullLabel()} available in <span class="cm-wait-time" data-until="${Math.round(now + fullLifeIn * 60000)}">`
-                    + `${asClock(fullLifeIn, Math.floor)}</span>`;
-            // Floored so the button never promises more than the heal gives; the epsilon absorbs float noise.
-            const reaches = Math.floor(100 - missingLife + res.mostLife.life + FLOAT_TOLERANCE);
-            setButton(fullBtn, `Most life → ${reaches}%: ${items[0].name}`, detail, true, `${icon('hour')}<span>${fullIn}</span>`);
-            fullBtn.classList.add('cm-most');
-            return items[0];
-        };
+        if (hospitalLeft <= 0) setButton(goBtn, 'Medout', 'Not in hospital');
+        else nextMedout = offerPlan(context, goBtn, 'Medout', context.planFor(hospitalLeft, 0), 0);
 
         nextFullLife = null;
         fullBtn.classList.remove('cm-most');
-        if (!sidebarLife) setButton(fullBtn, fullLabel(), 'Waiting for life data', false);
-        else if (hospitalLeft <= 0 && missingTarget <= 0) {
+        if (!sidebarLife) setButton(fullBtn, fullLabel(), 'Waiting for life data');
+        else if (hospitalLeft <= 0 && context.missingTarget <= 0) {
             setButton(fullBtn, fullLabel(),
-                settings.lifeTarget < 100 ? `Already at ${settings.lifeTarget}%+` : 'Already full life', false);
+                settings.lifeTarget < 100 ? `Already at ${settings.lifeTarget}%+` : 'Already full life');
         }
         else {
             // Exact hospital time picks the same items (item minutes are whole) but keeps the countdown exact.
-            const res = plan(hospitalExact, missingTarget, effectiveness(), usable, inventory.quantityById,
-                settings.bloodType, { ...limits, mostLife: settings.mostLife });
-            nextFullLife = res.mostLife ? offerMostLife(res) : offer(fullBtn, fullLabel(), res, missingTarget);
+            const res = context.planFor(hospitalExact, context.missingTarget,
+                { ...context.limits, mostLife: settings.mostLife });
+            nextFullLife = res.mostLife ? offerMostLife(context, res)
+                : offerPlan(context, fullBtn, fullLabel(), res, context.missingTarget);
         }
     }
 
@@ -1520,8 +1525,7 @@
         const revision = useController.revision();
         const startedDuringUse = useController.pendingCount() > 0;
         if (!quiet) {
-            setButton(goBtn, 'Medout', 'Loading…', false);
-            setButton(fullBtn, fullLabel(), 'Loading…', false);
+            showUnavailable('Loading…');
         }
         try {
             inventoryError = '';
@@ -1537,8 +1541,7 @@
         } catch (e) {
             inventoryError = e.code === 16 ? requiredInventoryMessage : e.message;
             if (!quiet) {
-                setButton(goBtn, 'Medout', 'Unavailable', false);
-                setButton(fullBtn, fullLabel(), 'Unavailable', false);
+                showUnavailable('Unavailable');
             }
             if (e.requiresManualInventoryLoad) showArmouryLoadNotice(
                 manual ? 'Could not load faction inventory — try again.' : undefined);

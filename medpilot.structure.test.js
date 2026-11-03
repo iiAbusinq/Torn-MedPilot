@@ -12,9 +12,12 @@ test('settings and API account data have explicit single-instance module boundar
 });
 
 test('inventory and page status have explicit single-instance module boundaries', () => {
-    assert.match(source, /function createInventoryService\(/);
+    // One inventory per page type: your own items or the faction armoury, each built once.
+    assert.match(source, /function createOwnInventory\(/);
+    assert.match(source, /function createArmouryInventory\(/);
     assert.match(source, /function createStatusReader\(\)/);
-    assert.equal((source.match(/createInventoryService\(/g) || []).length, 2);
+    assert.equal((source.match(/createOwnInventory\(/g) || []).length, 2);
+    assert.equal((source.match(/createArmouryInventory\(/g) || []).length, 2);
     assert.equal((source.match(/createStatusReader\(\)/g) || []).length, 2);
 });
 
