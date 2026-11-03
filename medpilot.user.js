@@ -67,6 +67,12 @@
     const PREDICTION_GRACE_MS = 15000;
     // Every medical item adds at least 10 minutes of cooldown, so this slack can never absorb a missing use.
     const COOLDOWN_MATCH_SLACK_S = 300;
+    // Life percentages are summed as floats; this absorbs their rounding noise in comparisons.
+    const FLOAT_TOLERANCE = 1e-9;
+    // Exact wait times are searched down to one millisecond, expressed in minutes.
+    const ONE_MS_IN_MINUTES = 1 / 60000;
+    // Torn's Date header has whole seconds, so the real server time is on average half a second later.
+    const DATE_HEADER_ROUNDING_MS = 500;
 
 
     const byStartOrder = items => items.slice().sort((one, other) => one.cooldown - other.cooldown);
@@ -94,7 +100,7 @@
     function firstCheaperWait(cooldownAfter, maxWait, cooldownNow) {
         if (cooldownAfter(maxWait) >= cooldownNow) return null;
         let tooSoon = 0, cheap = maxWait;
-        while (cheap - tooSoon > 1 / 60000) {
+        while (cheap - tooSoon > ONE_MS_IN_MINUTES) {
             const mid = (tooSoon + cheap) / 2;
             if (cooldownAfter(mid) < cooldownNow) cheap = mid;
             else tooSoon = mid;
@@ -203,10 +209,10 @@
             (function search(index, hospitalLeft, lifeLeft, cooldownSoFar) {
                 if (bestRank && cooldownSoFar > bestRank.cooldown) return;
                 if (cooldownSoFar >= budget && cooldownSoFar > 0) {
-                    if (hospitalLeft <= hospitalCap[index] && lifeLeft <= lifeCap[index] + 1e-9) cooldownBlocked = true;
+                    if (hospitalLeft <= hospitalCap[index] && lifeLeft <= lifeCap[index] + FLOAT_TOLERANCE) cooldownBlocked = true;
                     return;
                 }
-                if (hospitalLeft <= 0 && lifeLeft <= 1e-9) {
+                if (hospitalLeft <= 0 && lifeLeft <= FLOAT_TOLERANCE) {
                     const rank = rankOf();
                     const cooldownBeforeLastItem = currentCooldown + rank.cooldown - rank.largestStep;
                     if (rank.itemCount && cooldownBeforeLastItem >= maxCooldown) {
@@ -227,7 +233,7 @@
                     search(index + 1, hospitalLeft - count * profile.hospital, lifeLeft - count * profile.life, cooldown);
                     // Every larger count is pruned the same way, so only record whether one would complete.
                     if (cooldown >= budget) {
-                        if (hospitalLeft <= hospitalCap[index] && lifeLeft <= lifeCap[index] + 1e-9) cooldownBlocked = true;
+                        if (hospitalLeft <= hospitalCap[index] && lifeLeft <= lifeCap[index] + FLOAT_TOLERANCE) cooldownBlocked = true;
                         break;
                     }
                     if (bestRank && cooldown > bestRank.cooldown) break;
@@ -260,8 +266,8 @@
                 const rank = rankOf();
                 if (!rank.itemCount || cooldownNow + rank.cooldown - rank.largestStep >= maxCooldown) return;
                 const healed = Math.min(rank.life, lifePercent);
-                if (!most || healed > most.healed + 1e-9
-                    || healed > most.healed - 1e-9 && isBetter(rank, most.rank)) {
+                if (!most || healed > most.healed + FLOAT_TOLERANCE
+                    || healed > most.healed - FLOAT_TOLERANCE && isBetter(rank, most.rank)) {
                     mostCounts = counts.slice();
                     most = { healed, rank };
                 }
@@ -287,7 +293,7 @@
                 if (most) {
                     // A countdown needs the exact moment, or every render would restart it at the whole minute.
                     let exact = ready;
-                    while (exact - tooSoon > 1 / 60000) {
+                    while (exact - tooSoon > ONE_MS_IN_MINUTES) {
                         const mid = (tooSoon + exact) / 2;
                         if (findBest(mid).bestCounts) exact = mid;
                         else tooSoon = mid;
@@ -605,7 +611,7 @@
             const served = Date.parse(response.headers.get('date') || '');
             if (!served) return;
             const arrivedAt = Date.now();
-            clockOffsetMs = served + 500 + (arrivedAt - sentAt) / 2 - arrivedAt;
+            clockOffsetMs = served + DATE_HEADER_ROUNDING_MS + (arrivedAt - sentAt) / 2 - arrivedAt;
         };
         const pageIsActive = () => document.visibilityState === 'visible' && document.hasFocus();
         const watch = onChange => {
@@ -762,9 +768,7 @@
             return { quantityById: { ...armourySnapshot }, loanedById: {} };
         };
         const read = async ({ manual = false } = {}) => {
-            if (!currentSettings.apiKey) throw new Error(isArmoury
-                ? 'Minimal API key required for medical planning'
-                : 'Minimal API key required for inventory');
+            if (!currentSettings.apiKey) throw new Error(requiredInventoryMessage);
             if (isArmoury) return readArmoury(manual);
             const key = currentSettings.apiKey;
             const hour = apiHour();
@@ -1485,7 +1489,7 @@
                 : `${fullLabel()} available in <span class="cm-wait-time" data-until="${Math.round(now + fullLifeIn * 60000)}">`
                     + `${asClock(fullLifeIn, Math.floor)}</span>`;
             // Floored so the button never promises more than the heal gives; the epsilon absorbs float noise.
-            const reaches = Math.floor(100 - missingLife + res.mostLife.life + 1e-9);
+            const reaches = Math.floor(100 - missingLife + res.mostLife.life + FLOAT_TOLERANCE);
             setButton(fullBtn, `Most life → ${reaches}%: ${items[0].name}`, detail, true, `${icon('hour')}<span>${fullIn}</span>`);
             fullBtn.classList.add('cm-most');
             return items[0];
