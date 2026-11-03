@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MedPilot
 // @namespace    https://github.com/iiAbusinq
-// @version      1.5
+// @version      1.6
 // @description  Cheapest medical items cooldown-wise: one button to leave hospital, one to leave hospital at full life. Own items on item.php, faction armoury on factions.php
 // @author       AlbertoStegeman
 // @license      MIT
@@ -67,6 +67,12 @@
     const PREDICTION_GRACE_MS = 15000;
     // Every medical item adds at least 10 minutes of cooldown, so this slack can never absorb a missing use.
     const COOLDOWN_MATCH_SLACK_S = 300;
+    // Life percentages are summed as floats; this absorbs their rounding noise in comparisons.
+    const FLOAT_TOLERANCE = 1e-9;
+    // Exact wait times are searched down to one millisecond, expressed in minutes.
+    const ONE_MS_IN_MINUTES = 1 / 60000;
+    // Torn's Date header has whole seconds, so the real server time is on average half a second later.
+    const DATE_HEADER_ROUNDING_MS = 500;
 
 
     const byStartOrder = items => items.slice().sort((one, other) => one.cooldown - other.cooldown);
@@ -94,7 +100,7 @@
     function firstCheaperWait(cooldownAfter, maxWait, cooldownNow) {
         if (cooldownAfter(maxWait) >= cooldownNow) return null;
         let tooSoon = 0, cheap = maxWait;
-        while (cheap - tooSoon > 1 / 60000) {
+        while (cheap - tooSoon > ONE_MS_IN_MINUTES) {
             const mid = (tooSoon + cheap) / 2;
             if (cooldownAfter(mid) < cooldownNow) cheap = mid;
             else tooSoon = mid;
@@ -203,10 +209,10 @@
             (function search(index, hospitalLeft, lifeLeft, cooldownSoFar) {
                 if (bestRank && cooldownSoFar > bestRank.cooldown) return;
                 if (cooldownSoFar >= budget && cooldownSoFar > 0) {
-                    if (hospitalLeft <= hospitalCap[index] && lifeLeft <= lifeCap[index] + 1e-9) cooldownBlocked = true;
+                    if (hospitalLeft <= hospitalCap[index] && lifeLeft <= lifeCap[index] + FLOAT_TOLERANCE) cooldownBlocked = true;
                     return;
                 }
-                if (hospitalLeft <= 0 && lifeLeft <= 1e-9) {
+                if (hospitalLeft <= 0 && lifeLeft <= FLOAT_TOLERANCE) {
                     const rank = rankOf();
                     const cooldownBeforeLastItem = currentCooldown + rank.cooldown - rank.largestStep;
                     if (rank.itemCount && cooldownBeforeLastItem >= maxCooldown) {
@@ -227,7 +233,7 @@
                     search(index + 1, hospitalLeft - count * profile.hospital, lifeLeft - count * profile.life, cooldown);
                     // Every larger count is pruned the same way, so only record whether one would complete.
                     if (cooldown >= budget) {
-                        if (hospitalLeft <= hospitalCap[index] && lifeLeft <= lifeCap[index] + 1e-9) cooldownBlocked = true;
+                        if (hospitalLeft <= hospitalCap[index] && lifeLeft <= lifeCap[index] + FLOAT_TOLERANCE) cooldownBlocked = true;
                         break;
                     }
                     if (bestRank && cooldown > bestRank.cooldown) break;
@@ -260,8 +266,8 @@
                 const rank = rankOf();
                 if (!rank.itemCount || cooldownNow + rank.cooldown - rank.largestStep >= maxCooldown) return;
                 const healed = Math.min(rank.life, lifePercent);
-                if (!most || healed > most.healed + 1e-9
-                    || healed > most.healed - 1e-9 && isBetter(rank, most.rank)) {
+                if (!most || healed > most.healed + FLOAT_TOLERANCE
+                    || healed > most.healed - FLOAT_TOLERANCE && isBetter(rank, most.rank)) {
                     mostCounts = counts.slice();
                     most = { healed, rank };
                 }
@@ -287,7 +293,7 @@
                 if (most) {
                     // A countdown needs the exact moment, or every render would restart it at the whole minute.
                     let exact = ready;
-                    while (exact - tooSoon > 1 / 60000) {
+                    while (exact - tooSoon > ONE_MS_IN_MINUTES) {
                         const mid = (tooSoon + exact) / 2;
                         if (findBest(mid).bestCounts) exact = mid;
                         else tooSoon = mid;
@@ -385,7 +391,7 @@
         const settings = {
             // null: not chosen yet. A new install must pick its own type; existing users keep theirs.
             bloodType: newInstall ? null : 'o-', excludeOwn: legacyExclude.slice(), excludeArmoury: legacyExclude.slice(),
-            mostLife: false, lifeTarget: 100,
+            mostLife: false, lifeTarget: 100, loanedItems: 'own',
             ...stored,
             apiKey: isPda ? pdaApiKey : secureApiKey || legacyApiKey,
         };
@@ -548,11 +554,37 @@
     const effectiveness = () => accountData.detectedEffectiveness;
 
     const fromArmoury = location.pathname === '/factions.php';
+    // Everything that differs between your items page and the faction armoury, decided once.
+    const PAGE = fromArmoury ? {
+        keyRequiredMessage: 'Minimal API key required for medical planning',
+        useItemParams: id => ({ step: 'useItem', fac: '1', itemID: String(id) }),
+        anchor: '#faction-armoury-tabs',
+        belongsOnPage: () => /tab=armou?ry/i.test(location.hash),
+        // The armoury redraws its tabs, so the panel is placed again on every check.
+        keepsPlacement: false,
+        excludeKey: 'excludeArmoury',
+        spendFrom: 'from the armoury',
+        stockLabel: 'Armoury',
+        hasLoans: false,
+        // Torn's wording when the saved armoury stock is out of date (a faction mate took the item).
+        takenByOthers: /already been used/i,
+    } : {
+        keyRequiredMessage: 'Minimal API key required for inventory',
+        // loaned: a faction item lent to you; without this flag Torn only looks at your own stack.
+        useItemParams: (id, loaned) => ({
+            step: 'useItem', id: String(id), itemID: String(id), ...(loaned ? { loaned: '1' } : {}),
+        }),
+        anchor: '.equipped-items-wrap',
+        belongsOnPage: () => true,
+        keepsPlacement: true,
+        excludeKey: 'excludeOwn',
+        spendFrom: 'from your items',
+        stockLabel: 'Your items',
+        hasLoans: true,
+        takenByOthers: null,
+    };
     const requiredAccessLevel = 2;
     const requiredAccessName = 'Minimal';
-    const requiredInventoryMessage = fromArmoury
-        ? 'Minimal API key required for medical planning'
-        : 'Minimal API key required for inventory';
 
     function createStatusReader() {
         const statusIcons = "[class*='status-icons___'], [class*='statusIcons___']";
@@ -605,7 +637,7 @@
             const served = Date.parse(response.headers.get('date') || '');
             if (!served) return;
             const arrivedAt = Date.now();
-            clockOffsetMs = served + 500 + (arrivedAt - sentAt) / 2 - arrivedAt;
+            clockOffsetMs = served + DATE_HEADER_ROUNDING_MS + (arrivedAt - sentAt) / 2 - arrivedAt;
         };
         const pageIsActive = () => document.visibilityState === 'visible' && document.hasFocus();
         const watch = onChange => {
@@ -641,67 +673,103 @@
         });
     }
 
-    function useItem(id) {
-        return tornPost('item.php', fromArmoury
-            ? { step: 'useItem', fac: '1', itemID: String(id) }
-            : { step: 'useItem', id: String(id), itemID: String(id) });
+    function useItem(id, loaned = false) {
+        return tornPost('item.php', PAGE.useItemParams(id, loaned));
     }
 
-    function createInventoryService({ settings: currentSettings, request, fromArmoury: isArmoury,
-        apiHour, loadArmoury, pageIsActive: canReadPage }) {
+    // Shared by both inventories: every count must be a finite, non-negative number.
+    const validCounts = counts => counts && Object.values(counts)
+        .every(amount => Number.isFinite(amount) && amount >= 0);
+    const storedObject = key => {
+        const stored = GM_getValue(key, {});
+        return stored && typeof stored === 'object' ? stored : {};
+    };
+
+    // Your own items: read from the API, cached per hour, minus the uses made since that read.
+    function createOwnInventory({ settings: currentSettings, request, apiHour }) {
+        // The saved cache and uses live under 'user'; kept so existing saves still load.
+        const source = 'user';
         let identity = null;
-        let armourySnapshot = null;
-        const source = isArmoury ? 'faction' : 'user';
+        // Caches from before loaned items were tracked have no loanedById, so they are fetched again.
         const validCache = (entry, key, hour) => entry
             && entry.apiKey === key && entry.hour === hour && Number.isFinite(entry.timestamp)
-            && entry.quantityById && Object.values(entry.quantityById)
-                .every(amount => Number.isFinite(amount) && amount >= 0);
-        const validArmouryCache = (entry, key) => entry
-            && entry.apiKey === key && entry.quantityById
-            && Object.values(entry.quantityById)
-                .every(amount => Number.isFinite(amount) && amount >= 0);
-        const inventoryCache = () => {
-            const stored = GM_getValue(INVENTORY_CACHE_KEY, {});
-            return stored && typeof stored === 'object' ? stored : {};
-        };
-        const storeArmourySnapshot = quantityById => {
-            armourySnapshot = { ...quantityById };
-            const cache = inventoryCache();
-            cache.faction = { apiKey: currentSettings.apiKey, quantityById: { ...armourySnapshot } };
-            GM_setValue(INVENTORY_CACHE_KEY, cache);
-        };
-        const storedUses = () => {
-            const stored = GM_getValue(INVENTORY_USE_KEY, {});
-            return stored && typeof stored === 'object' ? stored : {};
-        };
+            && validCounts(entry.quantityById) && validCounts(entry.loanedById);
         const applyUses = (snapshot, key) => {
-            const uses = storedUses();
+            const uses = storedObject(INVENTORY_USE_KEY);
             let entry = uses[source];
             if (!entry || entry.apiKey !== key || entry.timestamp !== snapshot.timestamp) {
-                entry = { apiKey: key, timestamp: snapshot.timestamp, quantityById: {} };
+                entry = { apiKey: key, timestamp: snapshot.timestamp, quantityById: {}, loanedById: {} };
                 uses[source] = entry;
                 GM_setValue(INVENTORY_USE_KEY, uses);
             }
-            identity = { source, apiKey: key, timestamp: snapshot.timestamp };
-            return Object.fromEntries(Object.entries(snapshot.quantityById).map(([id, amount]) =>
-                [id, Math.max(0, amount - (entry.quantityById[id] || 0))]));
+            identity = { apiKey: key, timestamp: snapshot.timestamp };
+            const left = (counts, used = {}) => Object.fromEntries(Object.entries(counts).map(([id, amount]) =>
+                [id, Math.max(0, amount - (used[id] || 0))]));
+            // quantityById is everything the planner may spend; loanedById is the loaned part of it.
+            const quantityById = left(snapshot.quantityById, entry.quantityById);
+            const loanedById = currentSettings.loanedItems === 'never'
+                ? {} : left(snapshot.loanedById, entry.loanedById);
+            for (const [id, amount] of Object.entries(loanedById)) {
+                quantityById[id] = (quantityById[id] || 0) + amount;
+            }
+            return { quantityById, loanedById };
+        };
+        const recordUse = (itemId, change, loaned = false) => {
+            if (!identity) return;
+            const uses = storedObject(INVENTORY_USE_KEY);
+            let entry = uses[source];
+            if (!entry || entry.apiKey !== identity.apiKey || entry.timestamp !== identity.timestamp) {
+                entry = { apiKey: identity.apiKey, timestamp: identity.timestamp, quantityById: {}, loanedById: {} };
+                uses[source] = entry;
+            }
+            const used = loaned ? (entry.loanedById ||= {}) : entry.quantityById;
+            used[itemId] = Math.max(0, (used[itemId] || 0) + change);
+            GM_setValue(INVENTORY_USE_KEY, uses);
+        };
+        const read = async ({ manual = false } = {}) => {
+            if (!currentSettings.apiKey) throw new Error(PAGE.keyRequiredMessage);
+            const key = currentSettings.apiKey;
+            const hour = apiHour();
+            const cache = storedObject(INVENTORY_CACHE_KEY);
+            let snapshot = !manual && validCache(cache[source], key, hour) ? cache[source] : null;
+            if (!snapshot) {
+                const response = await request('v2/user/inventory?cat=Medical&limit=250', key);
+                const rows = response.inventory?.items;
+                const timestamp = response.inventory?.timestamp;
+                if (!Array.isArray(rows) || !Number.isFinite(timestamp)) {
+                    throw new Error('Unable to read medical inventory from the Torn API.');
+                }
+                const quantityById = {}, loanedById = {};
+                for (const row of rows) {
+                    const counts = row.faction_owned ? loanedById : quantityById;
+                    counts[row.id] = (counts[row.id] || 0) + row.amount;
+                }
+                snapshot = { apiKey: key, hour, timestamp, quantityById, loanedById };
+                cache[source] = snapshot;
+                GM_setValue(INVENTORY_CACHE_KEY, cache);
+            }
+            return applyUses(snapshot, key);
+        };
+        const clearIdentity = () => { identity = null; };
+
+        return { clearIdentity, read, recordUse };
+    }
+
+    // The faction armoury: read from the open armoury page, or loaded on request, and kept per API key.
+    function createArmouryInventory({ settings: currentSettings, loadArmoury, pageIsActive: canReadPage }) {
+        let armourySnapshot = null;
+        const validArmouryCache = (entry, key) => entry
+            && entry.apiKey === key && validCounts(entry.quantityById);
+        const storeArmourySnapshot = quantityById => {
+            armourySnapshot = { ...quantityById };
+            const cache = storedObject(INVENTORY_CACHE_KEY);
+            cache.faction = { apiKey: currentSettings.apiKey, quantityById: { ...armourySnapshot } };
+            GM_setValue(INVENTORY_CACHE_KEY, cache);
         };
         const recordUse = (itemId, change) => {
-            if (isArmoury) {
-                if (!armourySnapshot) return;
-                armourySnapshot[itemId] = Math.max(0, (armourySnapshot[itemId] || 0) - change);
-                storeArmourySnapshot(armourySnapshot);
-                return;
-            }
-            if (!identity) return;
-            const uses = storedUses();
-            let entry = uses[identity.source];
-            if (!entry || entry.apiKey !== identity.apiKey || entry.timestamp !== identity.timestamp) {
-                entry = { apiKey: identity.apiKey, timestamp: identity.timestamp, quantityById: {} };
-                uses[identity.source] = entry;
-            }
-            entry.quantityById[itemId] = Math.max(0, (entry.quantityById[itemId] || 0) + change);
-            GM_setValue(INVENTORY_USE_KEY, uses);
+            if (!armourySnapshot) return;
+            armourySnapshot[itemId] = Math.max(0, (armourySnapshot[itemId] || 0) - change);
+            storeArmourySnapshot(armourySnapshot);
         };
         const readArmouryDom = () => {
             const list = document.querySelector(".armoury-tabs[id*='medical'] .item-list");
@@ -719,7 +787,8 @@
             }
             return quantityById;
         };
-        const readArmoury = async manual => {
+        const read = async ({ manual = false } = {}) => {
+            if (!currentSettings.apiKey) throw new Error(PAGE.keyRequiredMessage);
             if (manual) {
                 try {
                     const response = await loadArmoury();
@@ -735,7 +804,7 @@
                 const domSnapshot = canReadPage() ? readArmouryDom() : null;
                 if (domSnapshot !== null) storeArmourySnapshot(domSnapshot);
                 else {
-                    const cached = inventoryCache().faction;
+                    const cached = storedObject(INVENTORY_CACHE_KEY).faction;
                     if (validArmouryCache(cached, currentSettings.apiKey)) {
                         armourySnapshot = { ...cached.quantityById };
                     }
@@ -746,42 +815,20 @@
                 failure.requiresManualInventoryLoad = true;
                 throw failure;
             }
-            return { ...armourySnapshot };
+            return { quantityById: { ...armourySnapshot }, loanedById: {} };
         };
-        const read = async ({ manual = false } = {}) => {
-            if (!currentSettings.apiKey) throw new Error(isArmoury
-                ? 'Minimal API key required for medical planning'
-                : 'Minimal API key required for inventory');
-            if (isArmoury) return readArmoury(manual);
-            const key = currentSettings.apiKey;
-            const hour = apiHour();
-            const cache = inventoryCache();
-            let snapshot = !manual && validCache(cache[source], key, hour) ? cache[source] : null;
-            if (!snapshot) {
-                const response = await request('v2/user/inventory?cat=Medical&limit=250', key);
-                const rows = response.inventory?.items;
-                const timestamp = response.inventory?.timestamp;
-                if (!Array.isArray(rows) || !Number.isFinite(timestamp)) {
-                    throw new Error('Unable to read medical inventory from the Torn API.');
-                }
-                const quantityById = {};
-                for (const row of rows) quantityById[row.id] = (quantityById[row.id] || 0) + row.amount;
-                snapshot = { apiKey: key, hour, timestamp, quantityById };
-                cache[source] = snapshot;
-                GM_setValue(INVENTORY_CACHE_KEY, cache);
-            }
-            return applyUses(snapshot, key);
-        };
-        const clearIdentity = () => { identity = null; armourySnapshot = null; };
+        const clearIdentity = () => { armourySnapshot = null; };
 
         return { clearIdentity, read, recordUse };
     }
 
-    const inventoryService = createInventoryService({
-        settings, request: api, fromArmoury, apiHour, pageIsActive,
-        loadArmoury: () => tornPost('factions.php',
-            { step: 'armouryTabContent', type: 'medical', start: '0' }),
-    });
+    const inventoryService = fromArmoury
+        ? createArmouryInventory({
+            settings, pageIsActive,
+            loadArmoury: () => tornPost('factions.php',
+                { step: 'armouryTabContent', type: 'medical', start: '0' }),
+        })
+        : createOwnInventory({ settings, request: api, apiHour });
     const readInventory = inventoryService.read;
     const recordInventoryUse = inventoryService.recordUse;
 
@@ -790,7 +837,7 @@
     const stat = (name, key, id) =>
         `<span class="cm-stat">${icon(name)}<span class="k">${key}</span><span class="v" id="cm-${id}">—</span></span>`;
 
-    function createPanelView({ fromArmoury: isArmoury }) {
+    function createPanelView({ hasLoans, spendFrom }) {
         const panel = document.createElement('div');
         panel.className = 'cm-panel' + (isPda ? ' cm-pda' : '');
         const apiDataStorage = isPda
@@ -851,14 +898,20 @@
                     <option value="">no blood bags</option>
                     ${Object.keys(ALLOWED_BLOOD).map(b => `<option value="${b}">${b.toUpperCase()}</option>`).join('')}
                 </select></label>
-            <label>Full life target % (lower saves med CD)
+            <label>Full life target %
                 <input id="cm-life-target" type="number" min="50" max="100" step="1"></label>
-            <label>Most life when the med CD blocks full life
+            <label>Most life if CD blocks
                 <select id="cm-most-life">
                     <option value="no">No</option>
                     <option value="yes">Yes</option>
                 </select></label>
-            <div class="cm-field">Items it may spend ${isArmoury ? 'from the armoury' : 'from your items'}
+            ${hasLoans ? `<label>Use faction loans
+                <select id="cm-loaned">
+                    <option value="loaned">Preferred</option>
+                    <option value="own">Backup</option>
+                    <option value="never">Never</option>
+                </select></label>` : ''}
+            <div class="cm-field">Items it may spend ${spendFrom}
                 <span class="cm-toggles">
                     ${SPEND_OPTIONS.map(option =>
                         `<button type="button" class="cm-chip" data-med-ids="${option.ids.join(',')}">${option.short}</button>`).join('')}
@@ -876,16 +929,17 @@
         let noticeAction = null;
         let noticeActionLabel = '';
 
-        const setNotice = (message, ok, options = {}) => {
+        // ok: shown in green as a success; otherwise it's a warning.
+        const setNotice = (message, { ok = false, dismissible = true, onAction = null, actionLabel = '' } = {}) => {
             notice = message;
-            noticeOk = !!ok;
-            noticeDismissible = options.dismissible !== false;
-            noticeAction = options.onAction || null;
-            noticeActionLabel = options.actionLabel || '';
+            noticeOk = ok;
+            noticeDismissible = dismissible;
+            noticeAction = onAction;
+            noticeActionLabel = actionLabel;
         };
         const dismissNotice = () => {
             if (!noticeDismissible) return;
-            setNotice('', true);
+            setNotice('');
         };
         const renderNotice = () => {
             find('flash-text').textContent = notice;
@@ -895,19 +949,19 @@
             find('flash-action').textContent = noticeActionLabel;
             find('flash-action').hidden = !noticeAction;
         };
-        const setButton = (button, title, detail, enabled, hint) => {
+        const setButton = (button, title, detail, { enabled = false, hint = '' } = {}) => {
             button.querySelector('.t1').textContent = title;
             button.querySelector('.t2').textContent = detail || '';
-            buttonHints.get(button).innerHTML = hint || '';
+            buttonHints.get(button).innerHTML = hint;
             button.disabled = !enabled;
         };
-        const renderClocks = ({ now, hospitalExact, used, maxShown, readMax }) => {
+        const renderClocks = ({ now, hospitalExact, used, maxCooldown, readMax }) => {
             panel.querySelectorAll('.cm-wait-time').forEach(wait => {
                 const text = asClock((wait.dataset.until - now) / 60000, Math.floor);
                 if (wait.textContent !== text) wait.textContent = text;
             });
             const hospital = hospitalExact > 0 ? asClock(hospitalExact, Math.floor) : 'Out';
-            const cooldown = `${asClock(used, Math.floor)} / ${asDuration(maxShown)}${readMax ? '' : '?'}`;
+            const cooldown = `${asClock(used, Math.floor)} / ${asDuration(maxCooldown)}${readMax ? '' : '?'}`;
             if (find('hosp').textContent !== hospital) find('hosp').textContent = hospital;
             if (find('cd').textContent !== cooldown) find('cd').textContent = cooldown;
         };
@@ -919,7 +973,7 @@
         };
     }
 
-    const panelView = createPanelView({ fromArmoury });
+    const panelView = createPanelView({ hasLoans: PAGE.hasLoans, spendFrom: PAGE.spendFrom });
     const panel = panelView.element;
     const $ = panelView.find;
     const goBtn = panelView.goButton;
@@ -930,7 +984,7 @@
 
     function createUseController(dependencies) {
         const {
-            accountData, getInventory, pageIsActive, readIcons, readInventory, readLife,
+            accountData, getInventory, loanedFirst, pageIsActive, readIcons, readInventory, readLife,
             recordInventoryUse, refreshInventory, render, serverNow, setInventory, setNotice,
             showRefusal, storedMaxCooldown, useItem,
         } = dependencies;
@@ -960,7 +1014,7 @@
                 ? 'Unable to confirm use — refresh to check' : 'Checking item use…');
 
         // fromPage false reuses the last sidebar read, so an unfocused tick never touches the page.
-        function readCurrentStatus(fromPage = true) {
+        function readCurrentStatus({ fromPage = true } = {}) {
             const icons = fromPage ? (lastIcons = readIcons()) : lastIcons;
             const hospitalStamp = icons.hospital ? icons.hospital.timerExpiresAt : 0;
             const cooldownStamp = icons.medical ? icons.medical.timerExpiresAt : 0;
@@ -994,8 +1048,7 @@
             const readMax = parseMaxCooldown(icons.medical && icons.medical.factionUpgrade)
                 || (fromPage ? (accountData.knownMaxCooldown ??= storedMaxCooldown()) : accountData.knownMaxCooldown);
             const used = minsUntil(predictedCooldown(cooldownStamp, cooldownTarget));
-            const maxShown = readMax || DEFAULT_MAX_COOLDOWN;
-            // Unknown: plan with the base maximum. Perks only raise it, so Torn never refuses the plan.
+            // Unknown: plan with (and show) the base maximum. Perks only raise it, so Torn never refuses the plan.
             const maxCooldown = readMax || DEFAULT_MAX_COOLDOWN;
             const life = sidebarLife && lifeTarget
                 ? { current: Math.max(sidebarLife.current, lifeTarget.current), maximum: sidebarLife.maximum }
@@ -1014,7 +1067,7 @@
             const missingLife = life
                 ? Math.max(0, (life.maximum - life.current) / life.maximum * 100) : null;
             return {
-                now, hospitalExact, hospitalLeft, missingLife, life, sidebarLife, used, maxShown,
+                now, hospitalExact, hospitalLeft, missingLife, life, sidebarLife, used,
                 maxCooldown, readMax,
             };
         }
@@ -1022,14 +1075,14 @@
         function startRecovery(batch, delay = USE_CONFIRMATION_TIMEOUT_MS) {
             if (recoveryState || batch !== activeBatch) return;
             recoveryState = { batch, attempts: 0, nextCheckAt: Date.now() + delay, check: null };
-            setNotice('Checking item use — further uses are paused.', false);
+            setNotice('Checking item use — further uses are paused.');
         }
 
         function showRecoveryStatus() {
             const stopped = recoveryState.attempts >= MAX_AUTO_RECOVERY_CHECKS;
             setNotice(stopped
                 ? 'Unable to confirm item use. Uses are paused; refresh to check again.'
-                : 'Item use is not confirmed yet. Checking again in 5 seconds.', false);
+                : 'Item use is not confirmed yet. Checking again in 5 seconds.');
         }
 
         function updateRecovery() {
@@ -1088,7 +1141,7 @@
             return stockMatches && hospitalMatches && cooldownMatches && lifeMatches;
         }
 
-        function confirmRecoveredBatch(batch, quantityById) {
+        function confirmRecoveredBatch(batch, stock) {
             for (const request of batch.requests) {
                 if (request.status !== 'pending' && request.status !== 'unknown') continue;
                 request.status = 'observed';
@@ -1102,11 +1155,11 @@
             lifeTarget = null;
             predictionExpiresAt = 0;
             for (const axis of Object.keys(predictionRevision)) predictionRevision[axis]++;
-            setInventory({ quantityById });
+            setInventory(stock);
             inventoryRevision++;
             activeBatch = null;
             recoveryState = null;
-            setNotice('Item use confirmed.', true);
+            setNotice('Item use confirmed.', { ok: true });
         }
 
         async function checkRecovery() {
@@ -1115,16 +1168,16 @@
             const check = { startedAt: Date.now(), revision: inventoryRevision };
             currentRecovery.check = check;
             currentRecovery.attempts++;
-            setNotice('Checking item use — further uses are paused.', false);
+            setNotice('Checking item use — further uses are paused.');
             try {
-                const quantityById = await readInventory();
+                const stock = await readInventory();
                 const isCurrent = recoveryState === currentRecovery
                     && currentRecovery.check === check
                     && check.revision === inventoryRevision;
                 const arrivedInTime = Date.now() - check.startedAt < USE_CONFIRMATION_TIMEOUT_MS;
                 if (isCurrent && arrivedInTime
-                    && batchMatchesCurrentState(currentRecovery.batch, quantityById)) {
-                    confirmRecoveredBatch(currentRecovery.batch, quantityById);
+                    && batchMatchesCurrentState(currentRecovery.batch, stock.quantityById)) {
+                    confirmRecoveredBatch(currentRecovery.batch, stock);
                 }
             } catch {
             } finally {
@@ -1173,8 +1226,14 @@
                     shownByCooldown: cooldownTarget,
                 };
             }
-            getInventory().quantityById[item.id]--;
-            recordInventoryUse(item.id, 1);
+            // Loaned items go first only when chosen, or once your own stack of that item is gone.
+            const stock = getInventory();
+            const loanedLeft = stock.loanedById[item.id] || 0;
+            request.loaned = loanedLeft > 0
+                && (loanedFirst() || stock.quantityById[item.id] - loanedLeft <= 0);
+            stock.quantityById[item.id]--;
+            if (request.loaned) stock.loanedById[item.id]--;
+            recordInventoryUse(item.id, 1, request.loaned);
             inventoryRevision++;
             predictionExpiresAt = serverNow() + PREDICTION_GRACE_MS;
             pendingUseCount++;
@@ -1189,8 +1248,10 @@
                 lifeTarget.shownByCooldown -= item.cooldown * 60;
             }
             if (predictionRevision.cooldown === requestRevision.cooldown) cooldownTarget -= item.cooldown * 60;
-            getInventory().quantityById[item.id]++;
-            recordInventoryUse(item.id, -1);
+            const stock = getInventory();
+            stock.quantityById[item.id]++;
+            if (request.loaned) stock.loanedById[item.id]++;
+            recordInventoryUse(item.id, -1, request.loaned);
         }
 
         function finishUseRequest(batch, request) {
@@ -1204,7 +1265,7 @@
                 activeBatch = null;
                 if (recoveryState?.batch === batch) {
                     recoveryState = null;
-                    if (request.status === 'success') setNotice('Item use confirmed.', true);
+                    if (request.status === 'success') setNotice('Item use confirmed.', { ok: true });
                 }
             }
             if (predictionExpiresAt) predictionExpiresAt = serverNow() + PREDICTION_GRACE_MS;
@@ -1215,14 +1276,14 @@
         async function useNext(item) {
             const inventory = getInventory();
             if (recoveryState || !item || !inventory || !(inventory.quantityById[item.id] > 0)) return;
-            setNotice('', true);
+            setNotice('');
             const icons = readIcons();
             const life = readLife();
             const batch = activeBatch ||= createUseBatch(icons, life);
             const request = reserveUse(batch, item, icons, life);
             render();
             try {
-                const response = await useItem(item.id);
+                const response = await useItem(item.id, request.loaned);
                 if (request.status === 'observed') return;
                 if (response?.success === false) {
                     request.status = 'refused';
@@ -1252,12 +1313,13 @@
     const useController = createUseController({
         accountData,
         getInventory: () => inventory,
+        loanedFirst: () => settings.loanedItems === 'loaned',
         pageIsActive,
         readIcons,
         readInventory,
         readLife,
         recordInventoryUse,
-        refreshInventory: () => refresh(true),
+        refreshInventory: () => refresh({ quiet: true }),
         render: () => render(),
         serverNow,
         setInventory: value => { inventory = value; },
@@ -1271,11 +1333,7 @@
     const checkRecovery = useController.checkRecovery;
     const useNext = useController.useNext;
 
-    const ANCHOR = fromArmoury ? '#faction-armoury-tabs' : '.equipped-items-wrap';
-
-    const panelBelongsOnPage = () => !fromArmoury || /tab=armou?ry/i.test(location.hash);
-
-    function openSettings(focusKey = false) {
+    function openSettings({ focusKey = false } = {}) {
         $('settings').classList.add('cm-open');
         $('toggle').classList.add('cm-open');
         const keyInput = $('key');
@@ -1284,7 +1342,8 @@
         markBloodRequired();
         $('most-life').value = settings.mostLife ? 'yes' : 'no';
         $('life-target').value = settings.lifeTarget;
-        const excluded = fromArmoury ? settings.excludeArmoury : settings.excludeOwn;
+        if (PAGE.hasLoans) $('loaned').value = settings.loanedItems;
+        const excluded = settings[PAGE.excludeKey];
         panel.querySelectorAll('[data-med-ids]').forEach(chip => {
             const ids = chip.dataset.medIds.split(',').map(Number);
             chip.classList.toggle('cm-on', ids.every(id => !excluded.includes(id)));
@@ -1301,17 +1360,17 @@
         $('toggle').classList.remove('cm-open');
     }
 
-    function showRequiredKeyNotice(message = requiredInventoryMessage) {
+    function showRequiredKeyNotice(message = PAGE.keyRequiredMessage) {
         if (isPda) {
-            setNotice(`${message} Configure a Minimal key in Torn PDA's userscript settings.`, false, {
+            setNotice(`${message} Configure a Minimal key in Torn PDA's userscript settings.`, {
                 dismissible: false,
             });
             return;
         }
-        setNotice(message, false, {
+        setNotice(message, {
             actionLabel: 'Add API key',
             dismissible: false,
-            onAction: () => openSettings(true),
+            onAction: () => openSettings({ focusKey: true }),
         });
     }
 
@@ -1319,7 +1378,7 @@
     const needsBloodType = () => Boolean(settings.apiKey) && settings.bloodType === null;
 
     function showBloodTypeNotice() {
-        setNotice('Set your own blood type so MedPilot only plans blood bags you can take.', false, {
+        setNotice('Set your own blood type so MedPilot only plans blood bags you can take.', {
             actionLabel: 'Choose blood type',
             dismissible: false,
             onAction: () => { openSettings(); $('blood').focus(); },
@@ -1327,7 +1386,7 @@
     }
 
     function showArmouryLoadNotice(message = 'Load the faction medical inventory to calculate a plan.') {
-        setNotice(message, false, {
+        setNotice(message, {
             actionLabel: 'Load medical inventory',
             dismissible: false,
             onAction: loadArmouryInventory,
@@ -1335,19 +1394,18 @@
     }
 
     function showRefusal(item, text) {
-        // Torn's wording when the saved armoury stock is out of date (a faction mate took the item).
-        if (fromArmoury && /already been used/i.test(text || '')) {
+        if (PAGE.takenByOthers?.test(text || '')) {
             showArmouryLoadNotice(`No ${item.name} left in the armoury. Reload the medical inventory to update the plan.`);
         } else {
-            setNotice(text || `${item.name} was refused.`, false);
+            setNotice(text || `${item.name} was refused.`);
         }
     }
 
     let mounted = false;
     function ensureMounted() {
-        if (!fromArmoury && mounted && statusReader.isWatching() && panel.isConnected) return;
+        if (PAGE.keepsPlacement && mounted && statusReader.isWatching() && panel.isConnected) return;
         if (pageIsActive()) statusReader.watch(render);
-        const anchor = panelBelongsOnPage() ? document.querySelector(ANCHOR) : null;
+        const anchor = PAGE.belongsOnPage() ? document.querySelector(PAGE.anchor) : null;
         if (!anchor) {
             panel.remove();
             mounted = false;
@@ -1357,125 +1415,126 @@
         if (mounted) return;
         mounted = true;
         if (pageIsActive()) refresh();
-        else {
-            setButton(goBtn, 'Medout', 'Focus the page to update', false);
-            setButton(fullBtn, fullLabel(), 'Focus the page to update', false);
-        }
+        else showUnavailable('Focus the page to update');
+    }
+
+    // Both buttons say why nothing can be offered right now.
+    function showUnavailable(detail) {
+        nextMedout = nextFullLife = null;
+        setButton(goBtn, 'Medout', detail);
+        setButton(fullBtn, fullLabel(), detail);
+    }
+
+    // What every plan in one render shares: the status, the limits and the items it may spend.
+    function planContext(status) {
+        const { now, life, missingLife, used, maxCooldown } = status;
+        const usable = usablePool();
+        const limits = { cooldownNow: used, maxCooldown };
+        return {
+            ...status,
+            limits,
+            missingTarget: life ? missingToTarget(life, settings.lifeTarget) : missingLife,
+            toNextLife: accountData.lifeRegen
+                ? accountData.lifeRegen.interval - (now / 1000) % accountData.lifeRegen.interval : Infinity,
+            planFor: (hospitalMinutes, lifePercent, options = limits) => plan(hospitalMinutes, lifePercent,
+                effectiveness(), usable, inventory.quantityById, settings.bloodType, options),
+        };
+    }
+
+    function waitHint(context, res, lifePercent) {
+        const { now, life, hospitalExact, missingTarget, toNextLife } = context;
+        const planAfter = waitMinutes => {
+            const later = lifeAfterWaiting(life, waitMinutes, accountData.lifeRegen, toNextLife);
+            const missing = !lifePercent ? 0
+                : later ? missingToTarget(later, settings.lifeTarget)
+                : missingTarget;
+            return context.planFor(Math.max(0, Math.ceil(hospitalExact - waitMinutes)), missing);
+        };
+        const cooldownAfter = waitMinutes => {
+            const cheaper = planAfter(waitMinutes);
+            return cheaper.items ? cheaper.cooldown : Infinity;
+        };
+        const wait = firstCheaperWait(cooldownAfter, HINT_MAX_WAIT, res.cooldown);
+        if (wait === null) return '';
+        const cheaper = planAfter(wait);
+        const saved = res.cooldown - cheaper.cooldown;
+        if (saved < HINT_MIN_SAVING) return '';
+        return `${icon('hour')}<span>Wait <span class="cm-wait-time" data-until="${now + wait * 60000}">`
+            + `${asClock(wait, Math.floor)}</span> → `
+            + `<strong>${pathLabel(cheaper.items) || 'No items'}</strong> · ${cheaper.cooldown}m CD</span>`;
+    }
+
+    function offerPlan(context, btn, label, res, lifePercent) {
+        if (res.error) { setButton(btn, label, res.error); return null; }
+        if (!res.items.length) { setButton(btn, label, 'Nothing to do'); return null; }
+        const detail = res.items.length === 1
+            ? `${res.cooldown}m cooldown`
+            : `${pathLabel(res.items)} · ${res.cooldown}m CD`;
+        setButton(btn, `${label}: ${res.items[0].name}`, detail,
+            { enabled: true, hint: waitHint(context, res, lifePercent) });
+        return res.items[0];
+    }
+
+    // Shown in place of full life only when the med CD blocks it and the most life still clears hospital.
+    function offerMostLife(context, res) {
+        const { items, cooldown, fullLifeIn } = res.mostLife;
+        const detail = items.length === 1 ? `${cooldown}m cooldown` : `${pathLabel(items)} · ${cooldown}m CD`;
+        const fullIn = fullLifeIn === undefined ? `${fullLabel()} never fits your max med CD`
+            : `${fullLabel()} available in <span class="cm-wait-time" data-until="${Math.round(context.now + fullLifeIn * 60000)}">`
+                + `${asClock(fullLifeIn, Math.floor)}</span>`;
+        // Floored so the button never promises more than the heal gives; the tolerance absorbs float noise.
+        const reaches = Math.floor(100 - context.missingLife + res.mostLife.life + FLOAT_TOLERANCE);
+        setButton(fullBtn, `Most life → ${reaches}%: ${items[0].name}`, detail,
+            { enabled: true, hint: `${icon('hour')}<span>${fullIn}</span>` });
+        fullBtn.classList.add('cm-most');
+        return items[0];
     }
 
     function render() {
         if (needsBloodType()) showBloodTypeNotice();
         panelView.renderNotice();
-        if (!inventory) {
-            const status = readCurrentStatus();
-            renderClocks(status);
-            $('life').textContent = status.sidebarLife
-                ? `${status.sidebarLife.current}/${status.sidebarLife.maximum}` : '—';
-            nextMedout = null;
-            nextFullLife = null;
-            const detail = inventoryError || (settings.apiKey ? 'loading inventory…' : requiredInventoryMessage);
-            setButton(goBtn, 'Medout', detail, false);
-            setButton(fullBtn, fullLabel(), detail, false);
-            return;
-        }
-        updateRecovery();
+        if (inventory) updateRecovery();
         const status = readCurrentStatus();
-        const { now, hospitalExact, hospitalLeft, missingLife, life, sidebarLife, used, maxShown,
-            maxCooldown, readMax } = status;
-
+        const { sidebarLife, hospitalLeft, hospitalExact } = status;
         renderClocks(status);
         $('life').textContent = sidebarLife ? `${sidebarLife.current}/${sidebarLife.maximum}` : '—';
+        if (!inventory) {
+            showUnavailable(inventoryError || (settings.apiKey ? 'loading inventory…' : PAGE.keyRequiredMessage));
+            return;
+        }
         if (useController.isRecovering()) {
-            nextMedout = nextFullLife = null;
-            const detail = useController.recoveryDetail();
-            setButton(goBtn, 'Medout', detail, false);
-            setButton(fullBtn, fullLabel(), detail, false);
+            showUnavailable(useController.recoveryDetail());
             return;
         }
         if (needsBloodType()) {
-            nextMedout = nextFullLife = null;
-            setButton(goBtn, 'Medout', 'Choose your blood type first', false);
-            setButton(fullBtn, fullLabel(), 'Choose your blood type first', false);
+            showUnavailable('Choose your blood type first');
             return;
         }
 
-        const missingTarget = life ? missingToTarget(life, settings.lifeTarget) : missingLife;
-        const toNextLife = accountData.lifeRegen
-            ? accountData.lifeRegen.interval - (now / 1000) % accountData.lifeRegen.interval : Infinity;
-
-        const waitHint = (res, lifePercent) => {
-            const planAfter = waitMinutes => {
-                const later = lifeAfterWaiting(life, waitMinutes, accountData.lifeRegen, toNextLife);
-                const missing = !lifePercent ? 0
-                    : later ? missingToTarget(later, settings.lifeTarget)
-                    : missingTarget;
-                return plan(Math.max(0, Math.ceil(hospitalExact - waitMinutes)), missing,
-                    effectiveness(), usable, inventory.quantityById, settings.bloodType, limits);
-            };
-            const cooldownAfter = waitMinutes => {
-                const cheaper = planAfter(waitMinutes);
-                return cheaper.items ? cheaper.cooldown : Infinity;
-            };
-            const wait = firstCheaperWait(cooldownAfter, HINT_MAX_WAIT, res.cooldown);
-            if (wait === null) return '';
-            const cheaper = planAfter(wait);
-            const saved = res.cooldown - cheaper.cooldown;
-            if (saved < HINT_MIN_SAVING) return '';
-            return `${icon('hour')}<span>Wait <span class="cm-wait-time" data-until="${now + wait * 60000}">`
-                + `${asClock(wait, Math.floor)}</span> → `
-                + `<strong>${pathLabel(cheaper.items) || 'No items'}</strong> · ${cheaper.cooldown}m CD</span>`;
-        };
-
-        const offer = (btn, label, res, lifePercent) => {
-            if (res.error) { setButton(btn, label, res.error, false); return null; }
-            if (!res.items.length) { setButton(btn, label, 'Nothing to do', false); return null; }
-            const detail = res.items.length === 1
-                ? `${res.cooldown}m cooldown`
-                : `${pathLabel(res.items)} · ${res.cooldown}m CD`;
-            setButton(btn, `${label}: ${res.items[0].name}`, detail, true, waitHint(res, lifePercent));
-            return res.items[0];
-        };
-
-        const usable = usablePool();
-        const limits = { cooldownNow: used, maxCooldown };
-
+        const context = planContext(status);
         nextMedout = null;
-        if (hospitalLeft <= 0) setButton(goBtn, 'Medout', 'Not in hospital', false);
-        else nextMedout = offer(goBtn, 'Medout',
-            plan(hospitalLeft, 0, effectiveness(), usable, inventory.quantityById, settings.bloodType, limits), 0);
-
-        // Shown in place of full life only when the med CD blocks it and the most life still clears hospital.
-        const offerMostLife = res => {
-            const { items, cooldown } = res.mostLife;
-            const detail = items.length === 1 ? `${cooldown}m cooldown` : `${pathLabel(items)} · ${cooldown}m CD`;
-            const { fullLifeIn } = res.mostLife;
-            const fullIn = fullLifeIn === undefined ? `${fullLabel()} never fits your max med CD`
-                : `${fullLabel()} available in <span class="cm-wait-time" data-until="${Math.round(now + fullLifeIn * 60000)}">`
-                    + `${asClock(fullLifeIn, Math.floor)}</span>`;
-            // Floored so the button never promises more than the heal gives; the epsilon absorbs float noise.
-            const reaches = Math.floor(100 - missingLife + res.mostLife.life + 1e-9);
-            setButton(fullBtn, `Most life → ${reaches}%: ${items[0].name}`, detail, true, `${icon('hour')}<span>${fullIn}</span>`);
-            fullBtn.classList.add('cm-most');
-            return items[0];
-        };
+        if (hospitalLeft <= 0) setButton(goBtn, 'Medout', 'Not in hospital');
+        else nextMedout = offerPlan(context, goBtn, 'Medout', context.planFor(hospitalLeft, 0), 0);
 
         nextFullLife = null;
         fullBtn.classList.remove('cm-most');
-        if (!sidebarLife) setButton(fullBtn, fullLabel(), 'Waiting for life data', false);
-        else if (hospitalLeft <= 0 && missingTarget <= 0) {
+        if (!sidebarLife) setButton(fullBtn, fullLabel(), 'Waiting for life data');
+        else if (hospitalLeft <= 0 && context.missingTarget <= 0) {
             setButton(fullBtn, fullLabel(),
-                settings.lifeTarget < 100 ? `Already at ${settings.lifeTarget}%+` : 'Already full life', false);
+                settings.lifeTarget < 100 ? `Already at ${settings.lifeTarget}%+` : 'Already full life');
         }
         else {
             // Exact hospital time picks the same items (item minutes are whole) but keeps the countdown exact.
-            const res = plan(hospitalExact, missingTarget, effectiveness(), usable, inventory.quantityById,
-                settings.bloodType, { ...limits, mostLife: settings.mostLife });
-            nextFullLife = res.mostLife ? offerMostLife(res) : offer(fullBtn, fullLabel(), res, missingTarget);
+            const res = context.planFor(hospitalExact, context.missingTarget,
+                { ...context.limits, mostLife: settings.mostLife });
+            nextFullLife = res.mostLife ? offerMostLife(context, res)
+                : offerPlan(context, fullBtn, fullLabel(), res, context.missingTarget);
         }
     }
 
+    // quiet: a background reload that keeps the buttons as they are while it loads.
     // manual: the user asked for it, so skip the hourly API caches and reload the armoury.
-    async function refresh(quiet, includeApi = true, manual = false) {
+    async function refresh({ quiet = false, manual = false } = {}) {
         if (useController.isRecovering()) {
             if (!quiet) await checkRecovery();
             return false;
@@ -1483,47 +1542,45 @@
         const revision = useController.revision();
         const startedDuringUse = useController.pendingCount() > 0;
         if (!quiet) {
-            setButton(goBtn, 'Medout', 'Loading…', false);
-            setButton(fullBtn, fullLabel(), 'Loading…', false);
+            showUnavailable('Loading…');
         }
         try {
             inventoryError = '';
             if (!settings.apiKey) clearApiData();
-            else if (includeApi && (!quiet || !accountData.perksKnown || accountData.hour !== apiHour())) {
+            else if (!quiet || !accountData.perksKnown || accountData.hour !== apiHour()) {
                 await refreshPerksAndLife(manual);
             }
-            const quantityById = await readInventory({ manual });
+            const stock = await readInventory({ manual });
             if (!startedDuringUse && !useController.pendingCount() && !useController.isRecovering()
-                && revision === useController.revision()) inventory = { quantityById };
+                && revision === useController.revision()) inventory = stock;
             if (pageIsActive()) render();
             return true;
         } catch (e) {
-            inventoryError = e.code === 16 ? requiredInventoryMessage : e.message;
+            inventoryError = e.code === 16 ? PAGE.keyRequiredMessage : e.message;
             if (!quiet) {
-                setButton(goBtn, 'Medout', 'Unavailable', false);
-                setButton(fullBtn, fullLabel(), 'Unavailable', false);
+                showUnavailable('Unavailable');
             }
             if (e.requiresManualInventoryLoad) showArmouryLoadNotice(
                 manual ? 'Could not load faction inventory — try again.' : undefined);
             else if (!settings.apiKey || e.code === 16) showRequiredKeyNotice();
-            else setNotice(e.message, false);
+            else setNotice(e.message);
             if (pageIsActive()) render();
             return false;
         }
     }
 
     async function loadArmouryInventory() {
-        setNotice('Loading faction medical inventory…', true, { dismissible: false });
+        setNotice('Loading faction medical inventory…', { ok: true, dismissible: false });
         render();
-        if (await refresh(false, true, true) && inventory) {
-            setNotice(`Loaded: ${inventorySummary()}`, true);
+        if (await refresh({ manual: true }) && inventory) {
+            setNotice(`Loaded: ${inventorySummary()}`, { ok: true });
             render();
         }
     }
 
     function usablePool() {
         const compatibleBags = ALLOWED_BLOOD[settings.bloodType] || [];
-        const excluded = fromArmoury ? settings.excludeArmoury : settings.excludeOwn;
+        const excluded = settings[PAGE.excludeKey];
         return MEDS
             .filter(med => !excluded.includes(med.id))
             .filter(med => !BLOOD_BAG_IDS.includes(med.id) || compatibleBags.includes(med.id));
@@ -1541,8 +1598,7 @@
             (total, med) => total
                 + (BLOOD_BAG_IDS.includes(med.id) ? inventory.quantityById[med.id] || 0 : 0), 0);
         if (bagTotal) lines.push(`Usable Blood Bags ×${bagTotal}`);
-        const source = fromArmoury ? 'Armoury' : 'Your items';
-        return `(${detail}) · ${source}: `
+        return `(${detail}) · ${PAGE.stockLabel}: `
             + (lines.length ? lines.join(', ') : 'nothing usable');
     }
 
@@ -1553,12 +1609,11 @@
         const chip = e.target.closest('[data-med-ids]');
         if (chip) chip.classList.toggle('cm-on');
     });
-
     $('flash-x').addEventListener('click', () => { panelView.dismissNotice(); render(); });
 
     $('refresh').addEventListener('click', async () => {
-        if (await refresh(false, true, true) && inventory) {
-            setNotice(`Refreshed: ${inventorySummary()}`, true);
+        if (await refresh({ manual: true }) && inventory) {
+            setNotice(`Refreshed: ${inventorySummary()}`, { ok: true });
             render();
         }
     });
@@ -1572,14 +1627,14 @@
         if (keyInput) settings.apiKey = keyInput.value.trim();
         settings.bloodType = $('blood').value === 'unset' ? null : $('blood').value;
         settings.mostLife = $('most-life').value === 'yes';
+        if (PAGE.hasLoans) settings.loanedItems = $('loaned').value;
         const typed = String($('life-target').value).trim();
         const target = Math.round(Number(typed));
         settings.lifeTarget = typed && Number.isFinite(target) ? Math.min(100, Math.max(50, target)) : 100;
         const excluded = [...panel.querySelectorAll('[data-med-ids]')]
             .filter(chip => !chip.classList.contains('cm-on'))
             .flatMap(chip => chip.dataset.medIds.split(',').map(Number));
-        if (fromArmoury) settings.excludeArmoury = excluded;
-        else settings.excludeOwn = excluded;
+        settings[PAGE.excludeKey] = excluded;
         save();
         clearApiData();
         inventory = null;
@@ -1588,23 +1643,22 @@
         closeSettings();
 
         if (settings.apiKey) {
-            setNotice('Checking API key…', true);
+            setNotice('Checking API key…', { ok: true });
             render();
             try {
                 await refreshPerksAndLife();
-                const quantityById = await readInventory();
-                inventory = { quantityById };
+                inventory = await readInventory();
                 useController.bumpRevision();
                 const spare = accountData.accessLevel > requiredAccessLevel
                     ? ` This key is ${accountData.accessType}; ${requiredAccessName} would do.` : '';
-                setNotice(`Changes saved.${spare}`, true);
+                setNotice(`Changes saved.${spare}`, { ok: true });
             } catch (e) {
-                inventoryError = e.code === 16 ? requiredInventoryMessage : e.message;
+                inventoryError = e.code === 16 ? PAGE.keyRequiredMessage : e.message;
                 const removed = e.apiKeyRemoved ? ' It was removed from this script.' : '';
                 if (e.requiresManualInventoryLoad) showArmouryLoadNotice();
                 else if (e.code === 16) showRequiredKeyNotice('Minimal API access is required.');
                 else setNotice((e.code === 2 ? 'That API key is not valid.'
-                    : `Key check failed: ${e.message}`) + removed, false);
+                    : `Key check failed: ${e.message}`) + removed);
             }
         } else {
             showRequiredKeyNotice();
@@ -1628,7 +1682,7 @@
         const wasMounted = mounted;
         ensureMounted();
         render();
-        if (wasMounted) refresh(!!inventory);
+        if (wasMounted) refresh({ quiet: !!inventory });
     }
 
     document.addEventListener('visibilitychange', onActivityChange);
@@ -1642,8 +1696,8 @@
     let loadedHour = apiHour();
     setInterval(() => {
         if (!inventory) return;
-        if (loadedHour !== apiHour()) { loadedHour = apiHour(); refresh(true); }
-        renderClocks(readCurrentStatus(pageIsActive()));
+        if (loadedHour !== apiHour()) { loadedHour = apiHour(); refresh({ quiet: true }); }
+        renderClocks(readCurrentStatus({ fromPage: pageIsActive() }));
     }, 100);
     onActivityChange();
     ensureMounted();
@@ -1731,7 +1785,8 @@
     border-top:1px solid #454545;background:rgba(0,0,0,.22)}
 .cm-panel .cm-settings.cm-open{display:flex}
 .cm-panel .cm-settings label{flex:1 1 170px;font-size:11px;color:#949494}
-.cm-panel .cm-key-field{position:relative;flex:1 1 170px;font-size:11px;color:#949494}
+/* The API key gets its own row, so the dropdowns below share one row. */
+.cm-panel .cm-key-field{position:relative;flex:1 1 100%;font-size:11px;color:#949494}
 .cm-panel .cm-pda-key{display:block;padding-right:22px;color:#cfcfcf;line-height:1.45}
 .cm-panel .cm-api-info{position:absolute;z-index:4;top:-3px;right:0}
 .cm-panel .cm-api-info summary{display:grid;place-items:center;width:16px;height:16px;border:1px solid #666;
@@ -1740,7 +1795,6 @@
 .cm-panel .cm-api-popup{position:absolute;top:21px;right:0;width:320px;max-width:calc(100vw - 40px);
     padding:10px;border:1px solid #555;border-radius:4px;background:#222;color:#ddd;
     box-shadow:0 5px 18px rgba(0,0,0,.55);font-size:10px;line-height:1.35}
-.cm-panel.cm-pda .cm-key-field{flex-basis:100%}
 .cm-panel.cm-pda .cm-api-info{position:static}
 .cm-panel.cm-pda .cm-api-info summary{position:absolute;top:-3px;right:0}
 .cm-panel.cm-pda .cm-api-popup{top:calc(100% + 4px);left:0;width:auto;max-width:none;box-sizing:border-box}
@@ -1749,7 +1803,7 @@
 .cm-panel .cm-api-popup th,.cm-panel .cm-api-popup td{padding:4px;border-top:1px solid #3d3d3d;
     color:#cfcfcf;text-align:left;vertical-align:top}
 .cm-panel .cm-api-popup th{width:78px;color:#c3c3c3;font-weight:bold}
-.cm-panel .cm-settings input,.cm-panel .cm-settings select{width:100%;box-sizing:border-box;
+.cm-panel .cm-settings input,.cm-panel .cm-settings select{width:100%;height:28px;box-sizing:border-box;
     margin-top:4px;padding:6px;background:#222;border:1px solid #555;border-radius:3px;color:#ddd;
     font:12px Arial,sans-serif}
 .cm-panel .cm-settings select.cm-required{border-color:#c9a14a;color:#e0c27a;
