@@ -554,11 +554,37 @@
     const effectiveness = () => accountData.detectedEffectiveness;
 
     const fromArmoury = location.pathname === '/factions.php';
+    // Everything that differs between your items page and the faction armoury, decided once.
+    const PAGE = fromArmoury ? {
+        keyRequiredMessage: 'Minimal API key required for medical planning',
+        useItemParams: id => ({ step: 'useItem', fac: '1', itemID: String(id) }),
+        anchor: '#faction-armoury-tabs',
+        belongsOnPage: () => /tab=armou?ry/i.test(location.hash),
+        // The armoury redraws its tabs, so the panel is placed again on every check.
+        keepsPlacement: false,
+        excludeKey: 'excludeArmoury',
+        spendFrom: 'from the armoury',
+        stockLabel: 'Armoury',
+        hasLoans: false,
+        // Torn's wording when the saved armoury stock is out of date (a faction mate took the item).
+        takenByOthers: /already been used/i,
+    } : {
+        keyRequiredMessage: 'Minimal API key required for inventory',
+        // loaned: a faction item lent to you; without this flag Torn only looks at your own stack.
+        useItemParams: (id, loaned) => ({
+            step: 'useItem', id: String(id), itemID: String(id), ...(loaned ? { loaned: '1' } : {}),
+        }),
+        anchor: '.equipped-items-wrap',
+        belongsOnPage: () => true,
+        keepsPlacement: true,
+        excludeKey: 'excludeOwn',
+        spendFrom: 'from your items',
+        stockLabel: 'Your items',
+        hasLoans: true,
+        takenByOthers: null,
+    };
     const requiredAccessLevel = 2;
     const requiredAccessName = 'Minimal';
-    const requiredInventoryMessage = fromArmoury
-        ? 'Minimal API key required for medical planning'
-        : 'Minimal API key required for inventory';
 
     function createStatusReader() {
         const statusIcons = "[class*='status-icons___'], [class*='statusIcons___']";
@@ -647,12 +673,8 @@
         });
     }
 
-    // loaned: a faction item lent to you; without this flag Torn only looks at your own stack.
     function useItem(id, loaned = false) {
-        if (fromArmoury) return tornPost('item.php', { step: 'useItem', fac: '1', itemID: String(id) });
-        return tornPost('item.php', {
-            step: 'useItem', id: String(id), itemID: String(id), ...(loaned ? { loaned: '1' } : {}),
-        });
+        return tornPost('item.php', PAGE.useItemParams(id, loaned));
     }
 
     // Shared by both inventories: every count must be a finite, non-negative number.
@@ -705,7 +727,7 @@
             GM_setValue(INVENTORY_USE_KEY, uses);
         };
         const read = async ({ manual = false } = {}) => {
-            if (!currentSettings.apiKey) throw new Error(requiredInventoryMessage);
+            if (!currentSettings.apiKey) throw new Error(PAGE.keyRequiredMessage);
             const key = currentSettings.apiKey;
             const hour = apiHour();
             const cache = storedObject(INVENTORY_CACHE_KEY);
@@ -766,7 +788,7 @@
             return quantityById;
         };
         const read = async ({ manual = false } = {}) => {
-            if (!currentSettings.apiKey) throw new Error(requiredInventoryMessage);
+            if (!currentSettings.apiKey) throw new Error(PAGE.keyRequiredMessage);
             if (manual) {
                 try {
                     const response = await loadArmoury();
@@ -815,7 +837,7 @@
     const stat = (name, key, id) =>
         `<span class="cm-stat">${icon(name)}<span class="k">${key}</span><span class="v" id="cm-${id}">—</span></span>`;
 
-    function createPanelView({ fromArmoury: isArmoury }) {
+    function createPanelView({ hasLoans, spendFrom }) {
         const panel = document.createElement('div');
         panel.className = 'cm-panel' + (isPda ? ' cm-pda' : '');
         const apiDataStorage = isPda
@@ -883,13 +905,13 @@
                     <option value="no">No</option>
                     <option value="yes">Yes</option>
                 </select></label>
-            ${isArmoury ? '' : `<label>Use faction loans
+            ${hasLoans ? `<label>Use faction loans
                 <select id="cm-loaned">
                     <option value="loaned">Preferred</option>
                     <option value="own">Backup</option>
                     <option value="never">Never</option>
-                </select></label>`}
-            <div class="cm-field">Items it may spend ${isArmoury ? 'from the armoury' : 'from your items'}
+                </select></label>` : ''}
+            <div class="cm-field">Items it may spend ${spendFrom}
                 <span class="cm-toggles">
                     ${SPEND_OPTIONS.map(option =>
                         `<button type="button" class="cm-chip" data-med-ids="${option.ids.join(',')}">${option.short}</button>`).join('')}
@@ -951,7 +973,7 @@
         };
     }
 
-    const panelView = createPanelView({ fromArmoury });
+    const panelView = createPanelView({ hasLoans: PAGE.hasLoans, spendFrom: PAGE.spendFrom });
     const panel = panelView.element;
     const $ = panelView.find;
     const goBtn = panelView.goButton;
@@ -1311,10 +1333,6 @@
     const checkRecovery = useController.checkRecovery;
     const useNext = useController.useNext;
 
-    const ANCHOR = fromArmoury ? '#faction-armoury-tabs' : '.equipped-items-wrap';
-
-    const panelBelongsOnPage = () => !fromArmoury || /tab=armou?ry/i.test(location.hash);
-
     function openSettings({ focusKey = false } = {}) {
         $('settings').classList.add('cm-open');
         $('toggle').classList.add('cm-open');
@@ -1324,8 +1342,8 @@
         markBloodRequired();
         $('most-life').value = settings.mostLife ? 'yes' : 'no';
         $('life-target').value = settings.lifeTarget;
-        if (!fromArmoury) $('loaned').value = settings.loanedItems;
-        const excluded = fromArmoury ? settings.excludeArmoury : settings.excludeOwn;
+        if (PAGE.hasLoans) $('loaned').value = settings.loanedItems;
+        const excluded = settings[PAGE.excludeKey];
         panel.querySelectorAll('[data-med-ids]').forEach(chip => {
             const ids = chip.dataset.medIds.split(',').map(Number);
             chip.classList.toggle('cm-on', ids.every(id => !excluded.includes(id)));
@@ -1342,7 +1360,7 @@
         $('toggle').classList.remove('cm-open');
     }
 
-    function showRequiredKeyNotice(message = requiredInventoryMessage) {
+    function showRequiredKeyNotice(message = PAGE.keyRequiredMessage) {
         if (isPda) {
             setNotice(`${message} Configure a Minimal key in Torn PDA's userscript settings.`, {
                 dismissible: false,
@@ -1376,8 +1394,7 @@
     }
 
     function showRefusal(item, text) {
-        // Torn's wording when the saved armoury stock is out of date (a faction mate took the item).
-        if (fromArmoury && /already been used/i.test(text || '')) {
+        if (PAGE.takenByOthers?.test(text || '')) {
             showArmouryLoadNotice(`No ${item.name} left in the armoury. Reload the medical inventory to update the plan.`);
         } else {
             setNotice(text || `${item.name} was refused.`);
@@ -1386,9 +1403,9 @@
 
     let mounted = false;
     function ensureMounted() {
-        if (!fromArmoury && mounted && statusReader.isWatching() && panel.isConnected) return;
+        if (PAGE.keepsPlacement && mounted && statusReader.isWatching() && panel.isConnected) return;
         if (pageIsActive()) statusReader.watch(render);
-        const anchor = panelBelongsOnPage() ? document.querySelector(ANCHOR) : null;
+        const anchor = PAGE.belongsOnPage() ? document.querySelector(PAGE.anchor) : null;
         if (!anchor) {
             panel.remove();
             mounted = false;
@@ -1482,7 +1499,7 @@
         renderClocks(status);
         $('life').textContent = sidebarLife ? `${sidebarLife.current}/${sidebarLife.maximum}` : '—';
         if (!inventory) {
-            showUnavailable(inventoryError || (settings.apiKey ? 'loading inventory…' : requiredInventoryMessage));
+            showUnavailable(inventoryError || (settings.apiKey ? 'loading inventory…' : PAGE.keyRequiredMessage));
             return;
         }
         if (useController.isRecovering()) {
@@ -1539,7 +1556,7 @@
             if (pageIsActive()) render();
             return true;
         } catch (e) {
-            inventoryError = e.code === 16 ? requiredInventoryMessage : e.message;
+            inventoryError = e.code === 16 ? PAGE.keyRequiredMessage : e.message;
             if (!quiet) {
                 showUnavailable('Unavailable');
             }
@@ -1563,7 +1580,7 @@
 
     function usablePool() {
         const compatibleBags = ALLOWED_BLOOD[settings.bloodType] || [];
-        const excluded = fromArmoury ? settings.excludeArmoury : settings.excludeOwn;
+        const excluded = settings[PAGE.excludeKey];
         return MEDS
             .filter(med => !excluded.includes(med.id))
             .filter(med => !BLOOD_BAG_IDS.includes(med.id) || compatibleBags.includes(med.id));
@@ -1581,8 +1598,7 @@
             (total, med) => total
                 + (BLOOD_BAG_IDS.includes(med.id) ? inventory.quantityById[med.id] || 0 : 0), 0);
         if (bagTotal) lines.push(`Usable Blood Bags ×${bagTotal}`);
-        const source = fromArmoury ? 'Armoury' : 'Your items';
-        return `(${detail}) · ${source}: `
+        return `(${detail}) · ${PAGE.stockLabel}: `
             + (lines.length ? lines.join(', ') : 'nothing usable');
     }
 
@@ -1611,15 +1627,14 @@
         if (keyInput) settings.apiKey = keyInput.value.trim();
         settings.bloodType = $('blood').value === 'unset' ? null : $('blood').value;
         settings.mostLife = $('most-life').value === 'yes';
-        if (!fromArmoury) settings.loanedItems = $('loaned').value;
+        if (PAGE.hasLoans) settings.loanedItems = $('loaned').value;
         const typed = String($('life-target').value).trim();
         const target = Math.round(Number(typed));
         settings.lifeTarget = typed && Number.isFinite(target) ? Math.min(100, Math.max(50, target)) : 100;
         const excluded = [...panel.querySelectorAll('[data-med-ids]')]
             .filter(chip => !chip.classList.contains('cm-on'))
             .flatMap(chip => chip.dataset.medIds.split(',').map(Number));
-        if (fromArmoury) settings.excludeArmoury = excluded;
-        else settings.excludeOwn = excluded;
+        settings[PAGE.excludeKey] = excluded;
         save();
         clearApiData();
         inventory = null;
@@ -1638,7 +1653,7 @@
                     ? ` This key is ${accountData.accessType}; ${requiredAccessName} would do.` : '';
                 setNotice(`Changes saved.${spare}`, { ok: true });
             } catch (e) {
-                inventoryError = e.code === 16 ? requiredInventoryMessage : e.message;
+                inventoryError = e.code === 16 ? PAGE.keyRequiredMessage : e.message;
                 const removed = e.apiKeyRemoved ? ' It was removed from this script.' : '';
                 if (e.requiresManualInventoryLoad) showArmouryLoadNotice();
                 else if (e.code === 16) showRequiredKeyNotice('Minimal API access is required.');
