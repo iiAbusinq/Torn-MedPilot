@@ -924,13 +924,13 @@
             buttonHints.get(button).innerHTML = hint || '';
             button.disabled = !enabled;
         };
-        const renderClocks = ({ now, hospitalExact, used, maxShown, readMax }) => {
+        const renderClocks = ({ now, hospitalExact, used, maxCooldown, readMax }) => {
             panel.querySelectorAll('.cm-wait-time').forEach(wait => {
                 const text = asClock((wait.dataset.until - now) / 60000, Math.floor);
                 if (wait.textContent !== text) wait.textContent = text;
             });
             const hospital = hospitalExact > 0 ? asClock(hospitalExact, Math.floor) : 'Out';
-            const cooldown = `${asClock(used, Math.floor)} / ${asDuration(maxShown)}${readMax ? '' : '?'}`;
+            const cooldown = `${asClock(used, Math.floor)} / ${asDuration(maxCooldown)}${readMax ? '' : '?'}`;
             if (find('hosp').textContent !== hospital) find('hosp').textContent = hospital;
             if (find('cd').textContent !== cooldown) find('cd').textContent = cooldown;
         };
@@ -1017,8 +1017,7 @@
             const readMax = parseMaxCooldown(icons.medical && icons.medical.factionUpgrade)
                 || (fromPage ? (accountData.knownMaxCooldown ??= storedMaxCooldown()) : accountData.knownMaxCooldown);
             const used = minsUntil(predictedCooldown(cooldownStamp, cooldownTarget));
-            const maxShown = readMax || DEFAULT_MAX_COOLDOWN;
-            // Unknown: plan with the base maximum. Perks only raise it, so Torn never refuses the plan.
+            // Unknown: plan with (and show) the base maximum. Perks only raise it, so Torn never refuses the plan.
             const maxCooldown = readMax || DEFAULT_MAX_COOLDOWN;
             const life = sidebarLife && lifeTarget
                 ? { current: Math.max(sidebarLife.current, lifeTarget.current), maximum: sidebarLife.maximum }
@@ -1037,7 +1036,7 @@
             const missingLife = life
                 ? Math.max(0, (life.maximum - life.current) / life.maximum * 100) : null;
             return {
-                now, hospitalExact, hospitalLeft, missingLife, life, sidebarLife, used, maxShown,
+                now, hospitalExact, hospitalLeft, missingLife, life, sidebarLife, used,
                 maxCooldown, readMax,
             };
         }
@@ -1413,8 +1412,8 @@
         }
         updateRecovery();
         const status = readCurrentStatus();
-        const { now, hospitalExact, hospitalLeft, missingLife, life, sidebarLife, used, maxShown,
-            maxCooldown, readMax } = status;
+        const { now, hospitalExact, hospitalLeft, missingLife, life, sidebarLife, used,
+            maxCooldown } = status;
 
         renderClocks(status);
         $('life').textContent = sidebarLife ? `${sidebarLife.current}/${sidebarLife.maximum}` : '—';
