@@ -23,7 +23,7 @@ async function browser({ stock = { 68: 3, 739: 2 }, current = 1300, maximum = 20
     timezoneOffsetMinutes = 0, secureStorage = null, accessLevel = 3,
     inventoryTimestamp = Math.floor(startNow / 1000), armouryDomLoaded = true,
     unusableArmouryIds = [], pda = false, pdaApiKey = null, sidebarLife = null, active = true,
-    freshInstall = false } = {}) {
+    freshInstall = false, loanedStock = {} } = {}) {
     settings = { apiKey: 'test-key', ...settings };
     let now = startNow;
     let holdStock = false, holdNextApi = false, stockReads = 0, apiReads = 0;
@@ -41,8 +41,7 @@ async function browser({ stock = { 68: 3, 739: 2 }, current = 1300, maximum = 20
                 querySelector: selector => element(key + selector),
                 querySelectorAll: () => [],
                 addEventListener: (event, handler) => listeners.set(event, handler),
-                click() { if (!this.disabled) return listeners.get('click')?.({}); },
-                focus() { this.focused = true; },
+                click() { if (!this.disabled) return listeners.get('click')?.({}); },                focus() { this.focused = true; },
                 insertAdjacentHTML() {}, remove() {}, appendChild() {},
                 classList: {
                     add: name => classes.add(name),
@@ -133,8 +132,9 @@ async function browser({ stock = { 68: 3, 739: 2 }, current = 1300, maximum = 20
                     stockReads++;
                     if (failStock) return Promise.reject(new Error('Stock unavailable'));
                     const snapshot = response({ inventory: {
-                        items: Object.entries(stock).map(([id, amount]) => ({ id: +id, amount,
-                            equipped: false, name: `Item ${id}`, faction_owned: false, uid: null })),
+                        items: [[stock, false], [loanedStock, true]].flatMap(([pile, factionOwned]) =>
+                            Object.entries(pile).map(([id, amount]) => ({ id: +id, amount,
+                                equipped: false, name: `Item ${id}`, faction_owned: factionOwned, uid: null }))),
                         timestamp: inventoryTimestamp,
                     }, _metadata: { total: Object.keys(stock).length, links: {} } });
                     return holdStock ? new Promise(resolve => stockResponses.push(() => resolve(snapshot)))
@@ -180,9 +180,11 @@ async function browser({ stock = { 68: 3, 739: 2 }, current = 1300, maximum = 20
             }
             assert.equal(body.get('step'), 'useItem');
             assert.equal(body.get('fac'), armoury ? '1' : null);
+            const pile = body.get('loaned') === '1' ? loanedStock : stock;
             return new Promise((resolve, reject) => requests.push({ id: +body.get('itemID'),
+                loaned: body.get('loaned'),
                 consumed: false,
-                consume() { if (!this.consumed) { stock[this.id]--; this.consumed = true; } },
+                consume() { if (!this.consumed) { pile[this.id]--; this.consumed = true; } },
                 finish(success = true) {
                     if (success) this.consume();
                     resolve(response({ success, text: success ? '' : 'Refused' }));
@@ -807,6 +809,59 @@ test('an armoury item already used by someone else explains the stale stock and 
     own.button('go').click();
     own.requests[0].reply(used); await own.flush();
     assert.equal(own.text('flash-text'), 'This item has already been used.');
+});
+
+test('a blood bag loaned by the faction is used with the loaned flag', async () => {
+    const b = await browser({ stock: {}, loanedStock: { 738: 17 }, hospitalMinutes: 120,
+        settings: { bloodType: 'o+' } });
+    b.button('go').click();
+    assert.equal(b.requests[0].id, 738);
+    assert.equal(b.requests[0].loaned, '1');
+});
+
+test('own items are used before loaned ones by default, then the loaned stack', async () => {
+    const b = await browser({ stock: { 738: 1 }, loanedStock: { 738: 1 }, hospitalMinutes: 240,
+        settings: { bloodType: 'o+' } });
+    b.button('go').click(); b.requests[0].finish(); await b.flush();
+    b.button('go').click();
+    assert.deepEqual(b.requests.map(r => r.loaned), [null, '1']);
+});
+
+test('loaned items first spends the loaned stack before your own', async () => {
+    const b = await browser({ stock: { 738: 1 }, loanedStock: { 738: 1 }, hospitalMinutes: 240,
+        settings: { bloodType: 'o+', loanedItems: 'loaned' } });
+    b.button('go').click(); b.requests[0].finish(); await b.flush();
+    b.button('go').click();
+    assert.deepEqual(b.requests.map(r => r.loaned), ['1', null]);
+});
+
+test('a refused loaned use puts the item back on the loaned stack', async () => {
+    const b = await browser({ stock: {}, loanedStock: { 738: 1 }, hospitalMinutes: 120,
+        settings: { bloodType: 'o+' } });
+    b.button('go').click(); b.requests[0].finish(false); await b.flush();
+    b.button('go').click();
+    assert.equal(b.requests[1].loaned, '1');
+});
+
+test('the faction loans dropdown saves the picked option and keeps it when untouched', async () => {
+    const b = await browser({ settings: { bloodType: 'o+', loanedItems: 'loaned' } });
+    const saved = () => JSON.parse(b.storage.get('cheap_medout_v2')).loanedItems;
+    b.button('toggle').click();
+    await b.button('save').click();
+    assert.equal(saved(), 'loaned');
+
+    b.button('toggle').click();
+    b.element('loaned').value = 'never';
+    await b.button('save').click();
+    assert.equal(saved(), 'never');
+});
+
+test('never using loaned items leaves them out of the plan', async () => {
+    const b = await browser({ stock: {}, loanedStock: { 738: 17 }, hospitalMinutes: 120,
+        settings: { bloodType: 'o+', loanedItems: 'never' } });
+    assert.equal(b.detail('go'), 'No usable medical items available.');
+    b.button('go').click();
+    assert.equal(b.requests.length, 0);
 });
 
 test('a refused second item retains the first successful heal while the sidebar lags', async () => {

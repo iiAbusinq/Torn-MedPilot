@@ -385,7 +385,7 @@
         const settings = {
             // null: not chosen yet. A new install must pick its own type; existing users keep theirs.
             bloodType: newInstall ? null : 'o-', excludeOwn: legacyExclude.slice(), excludeArmoury: legacyExclude.slice(),
-            mostLife: false, lifeTarget: 100,
+            mostLife: false, lifeTarget: 100, loanedItems: 'own',
             ...stored,
             apiKey: isPda ? pdaApiKey : secureApiKey || legacyApiKey,
         };
@@ -641,10 +641,12 @@
         });
     }
 
-    function useItem(id) {
-        return tornPost('item.php', fromArmoury
-            ? { step: 'useItem', fac: '1', itemID: String(id) }
-            : { step: 'useItem', id: String(id), itemID: String(id) });
+    // loaned: a faction item lent to you; without this flag Torn only looks at your own stack.
+    function useItem(id, loaned = false) {
+        if (fromArmoury) return tornPost('item.php', { step: 'useItem', fac: '1', itemID: String(id) });
+        return tornPost('item.php', {
+            step: 'useItem', id: String(id), itemID: String(id), ...(loaned ? { loaned: '1' } : {}),
+        });
     }
 
     function createInventoryService({ settings: currentSettings, request, fromArmoury: isArmoury,
@@ -652,10 +654,12 @@
         let identity = null;
         let armourySnapshot = null;
         const source = isArmoury ? 'faction' : 'user';
+        const validCounts = counts => counts && Object.values(counts)
+            .every(amount => Number.isFinite(amount) && amount >= 0);
+        // Caches from before loaned items were tracked have no loanedById, so they are fetched again.
         const validCache = (entry, key, hour) => entry
             && entry.apiKey === key && entry.hour === hour && Number.isFinite(entry.timestamp)
-            && entry.quantityById && Object.values(entry.quantityById)
-                .every(amount => Number.isFinite(amount) && amount >= 0);
+            && validCounts(entry.quantityById) && validCounts(entry.loanedById);
         const validArmouryCache = (entry, key) => entry
             && entry.apiKey === key && entry.quantityById
             && Object.values(entry.quantityById)
@@ -678,15 +682,23 @@
             const uses = storedUses();
             let entry = uses[source];
             if (!entry || entry.apiKey !== key || entry.timestamp !== snapshot.timestamp) {
-                entry = { apiKey: key, timestamp: snapshot.timestamp, quantityById: {} };
+                entry = { apiKey: key, timestamp: snapshot.timestamp, quantityById: {}, loanedById: {} };
                 uses[source] = entry;
                 GM_setValue(INVENTORY_USE_KEY, uses);
             }
             identity = { source, apiKey: key, timestamp: snapshot.timestamp };
-            return Object.fromEntries(Object.entries(snapshot.quantityById).map(([id, amount]) =>
-                [id, Math.max(0, amount - (entry.quantityById[id] || 0))]));
+            const left = (counts, used = {}) => Object.fromEntries(Object.entries(counts).map(([id, amount]) =>
+                [id, Math.max(0, amount - (used[id] || 0))]));
+            // quantityById is everything the planner may spend; loanedById is the loaned part of it.
+            const quantityById = left(snapshot.quantityById, entry.quantityById);
+            const loanedById = currentSettings.loanedItems === 'never'
+                ? {} : left(snapshot.loanedById, entry.loanedById);
+            for (const [id, amount] of Object.entries(loanedById)) {
+                quantityById[id] = (quantityById[id] || 0) + amount;
+            }
+            return { quantityById, loanedById };
         };
-        const recordUse = (itemId, change) => {
+        const recordUse = (itemId, change, loaned = false) => {
             if (isArmoury) {
                 if (!armourySnapshot) return;
                 armourySnapshot[itemId] = Math.max(0, (armourySnapshot[itemId] || 0) - change);
@@ -697,10 +709,11 @@
             const uses = storedUses();
             let entry = uses[identity.source];
             if (!entry || entry.apiKey !== identity.apiKey || entry.timestamp !== identity.timestamp) {
-                entry = { apiKey: identity.apiKey, timestamp: identity.timestamp, quantityById: {} };
+                entry = { apiKey: identity.apiKey, timestamp: identity.timestamp, quantityById: {}, loanedById: {} };
                 uses[identity.source] = entry;
             }
-            entry.quantityById[itemId] = Math.max(0, (entry.quantityById[itemId] || 0) + change);
+            const used = loaned ? (entry.loanedById ||= {}) : entry.quantityById;
+            used[itemId] = Math.max(0, (used[itemId] || 0) + change);
             GM_setValue(INVENTORY_USE_KEY, uses);
         };
         const readArmouryDom = () => {
@@ -746,7 +759,7 @@
                 failure.requiresManualInventoryLoad = true;
                 throw failure;
             }
-            return { ...armourySnapshot };
+            return { quantityById: { ...armourySnapshot }, loanedById: {} };
         };
         const read = async ({ manual = false } = {}) => {
             if (!currentSettings.apiKey) throw new Error(isArmoury
@@ -764,9 +777,12 @@
                 if (!Array.isArray(rows) || !Number.isFinite(timestamp)) {
                     throw new Error('Unable to read medical inventory from the Torn API.');
                 }
-                const quantityById = {};
-                for (const row of rows) quantityById[row.id] = (quantityById[row.id] || 0) + row.amount;
-                snapshot = { apiKey: key, hour, timestamp, quantityById };
+                const quantityById = {}, loanedById = {};
+                for (const row of rows) {
+                    const counts = row.faction_owned ? loanedById : quantityById;
+                    counts[row.id] = (counts[row.id] || 0) + row.amount;
+                }
+                snapshot = { apiKey: key, hour, timestamp, quantityById, loanedById };
                 cache[source] = snapshot;
                 GM_setValue(INVENTORY_CACHE_KEY, cache);
             }
@@ -851,13 +867,19 @@
                     <option value="">no blood bags</option>
                     ${Object.keys(ALLOWED_BLOOD).map(b => `<option value="${b}">${b.toUpperCase()}</option>`).join('')}
                 </select></label>
-            <label>Full life target % (lower saves med CD)
+            <label>Full life target %
                 <input id="cm-life-target" type="number" min="50" max="100" step="1"></label>
-            <label>Most life when the med CD blocks full life
+            <label>Most life if CD blocks
                 <select id="cm-most-life">
                     <option value="no">No</option>
                     <option value="yes">Yes</option>
                 </select></label>
+            ${isArmoury ? '' : `<label>Use faction loans
+                <select id="cm-loaned">
+                    <option value="loaned">Preferred</option>
+                    <option value="own">Backup</option>
+                    <option value="never">Never</option>
+                </select></label>`}
             <div class="cm-field">Items it may spend ${isArmoury ? 'from the armoury' : 'from your items'}
                 <span class="cm-toggles">
                     ${SPEND_OPTIONS.map(option =>
@@ -930,7 +952,7 @@
 
     function createUseController(dependencies) {
         const {
-            accountData, getInventory, pageIsActive, readIcons, readInventory, readLife,
+            accountData, getInventory, loanedFirst, pageIsActive, readIcons, readInventory, readLife,
             recordInventoryUse, refreshInventory, render, serverNow, setInventory, setNotice,
             showRefusal, storedMaxCooldown, useItem,
         } = dependencies;
@@ -1088,7 +1110,7 @@
             return stockMatches && hospitalMatches && cooldownMatches && lifeMatches;
         }
 
-        function confirmRecoveredBatch(batch, quantityById) {
+        function confirmRecoveredBatch(batch, stock) {
             for (const request of batch.requests) {
                 if (request.status !== 'pending' && request.status !== 'unknown') continue;
                 request.status = 'observed';
@@ -1102,7 +1124,7 @@
             lifeTarget = null;
             predictionExpiresAt = 0;
             for (const axis of Object.keys(predictionRevision)) predictionRevision[axis]++;
-            setInventory({ quantityById });
+            setInventory(stock);
             inventoryRevision++;
             activeBatch = null;
             recoveryState = null;
@@ -1117,14 +1139,14 @@
             currentRecovery.attempts++;
             setNotice('Checking item use — further uses are paused.', false);
             try {
-                const quantityById = await readInventory();
+                const stock = await readInventory();
                 const isCurrent = recoveryState === currentRecovery
                     && currentRecovery.check === check
                     && check.revision === inventoryRevision;
                 const arrivedInTime = Date.now() - check.startedAt < USE_CONFIRMATION_TIMEOUT_MS;
                 if (isCurrent && arrivedInTime
-                    && batchMatchesCurrentState(currentRecovery.batch, quantityById)) {
-                    confirmRecoveredBatch(currentRecovery.batch, quantityById);
+                    && batchMatchesCurrentState(currentRecovery.batch, stock.quantityById)) {
+                    confirmRecoveredBatch(currentRecovery.batch, stock);
                 }
             } catch {
             } finally {
@@ -1173,8 +1195,14 @@
                     shownByCooldown: cooldownTarget,
                 };
             }
-            getInventory().quantityById[item.id]--;
-            recordInventoryUse(item.id, 1);
+            // Loaned items go first only when chosen, or once your own stack of that item is gone.
+            const stock = getInventory();
+            const loanedLeft = stock.loanedById[item.id] || 0;
+            request.loaned = loanedLeft > 0
+                && (loanedFirst() || stock.quantityById[item.id] - loanedLeft <= 0);
+            stock.quantityById[item.id]--;
+            if (request.loaned) stock.loanedById[item.id]--;
+            recordInventoryUse(item.id, 1, request.loaned);
             inventoryRevision++;
             predictionExpiresAt = serverNow() + PREDICTION_GRACE_MS;
             pendingUseCount++;
@@ -1189,8 +1217,10 @@
                 lifeTarget.shownByCooldown -= item.cooldown * 60;
             }
             if (predictionRevision.cooldown === requestRevision.cooldown) cooldownTarget -= item.cooldown * 60;
-            getInventory().quantityById[item.id]++;
-            recordInventoryUse(item.id, -1);
+            const stock = getInventory();
+            stock.quantityById[item.id]++;
+            if (request.loaned) stock.loanedById[item.id]++;
+            recordInventoryUse(item.id, -1, request.loaned);
         }
 
         function finishUseRequest(batch, request) {
@@ -1222,7 +1252,7 @@
             const request = reserveUse(batch, item, icons, life);
             render();
             try {
-                const response = await useItem(item.id);
+                const response = await useItem(item.id, request.loaned);
                 if (request.status === 'observed') return;
                 if (response?.success === false) {
                     request.status = 'refused';
@@ -1252,6 +1282,7 @@
     const useController = createUseController({
         accountData,
         getInventory: () => inventory,
+        loanedFirst: () => settings.loanedItems === 'loaned',
         pageIsActive,
         readIcons,
         readInventory,
@@ -1284,6 +1315,7 @@
         markBloodRequired();
         $('most-life').value = settings.mostLife ? 'yes' : 'no';
         $('life-target').value = settings.lifeTarget;
+        if (!fromArmoury) $('loaned').value = settings.loanedItems;
         const excluded = fromArmoury ? settings.excludeArmoury : settings.excludeOwn;
         panel.querySelectorAll('[data-med-ids]').forEach(chip => {
             const ids = chip.dataset.medIds.split(',').map(Number);
@@ -1492,9 +1524,9 @@
             else if (includeApi && (!quiet || !accountData.perksKnown || accountData.hour !== apiHour())) {
                 await refreshPerksAndLife(manual);
             }
-            const quantityById = await readInventory({ manual });
+            const stock = await readInventory({ manual });
             if (!startedDuringUse && !useController.pendingCount() && !useController.isRecovering()
-                && revision === useController.revision()) inventory = { quantityById };
+                && revision === useController.revision()) inventory = stock;
             if (pageIsActive()) render();
             return true;
         } catch (e) {
@@ -1553,7 +1585,6 @@
         const chip = e.target.closest('[data-med-ids]');
         if (chip) chip.classList.toggle('cm-on');
     });
-
     $('flash-x').addEventListener('click', () => { panelView.dismissNotice(); render(); });
 
     $('refresh').addEventListener('click', async () => {
@@ -1572,6 +1603,7 @@
         if (keyInput) settings.apiKey = keyInput.value.trim();
         settings.bloodType = $('blood').value === 'unset' ? null : $('blood').value;
         settings.mostLife = $('most-life').value === 'yes';
+        if (!fromArmoury) settings.loanedItems = $('loaned').value;
         const typed = String($('life-target').value).trim();
         const target = Math.round(Number(typed));
         settings.lifeTarget = typed && Number.isFinite(target) ? Math.min(100, Math.max(50, target)) : 100;
@@ -1592,8 +1624,7 @@
             render();
             try {
                 await refreshPerksAndLife();
-                const quantityById = await readInventory();
-                inventory = { quantityById };
+                inventory = await readInventory();
                 useController.bumpRevision();
                 const spare = accountData.accessLevel > requiredAccessLevel
                     ? ` This key is ${accountData.accessType}; ${requiredAccessName} would do.` : '';
@@ -1731,7 +1762,8 @@
     border-top:1px solid #454545;background:rgba(0,0,0,.22)}
 .cm-panel .cm-settings.cm-open{display:flex}
 .cm-panel .cm-settings label{flex:1 1 170px;font-size:11px;color:#949494}
-.cm-panel .cm-key-field{position:relative;flex:1 1 170px;font-size:11px;color:#949494}
+/* The API key gets its own row, so the dropdowns below share one row. */
+.cm-panel .cm-key-field{position:relative;flex:1 1 100%;font-size:11px;color:#949494}
 .cm-panel .cm-pda-key{display:block;padding-right:22px;color:#cfcfcf;line-height:1.45}
 .cm-panel .cm-api-info{position:absolute;z-index:4;top:-3px;right:0}
 .cm-panel .cm-api-info summary{display:grid;place-items:center;width:16px;height:16px;border:1px solid #666;
@@ -1740,7 +1772,6 @@
 .cm-panel .cm-api-popup{position:absolute;top:21px;right:0;width:320px;max-width:calc(100vw - 40px);
     padding:10px;border:1px solid #555;border-radius:4px;background:#222;color:#ddd;
     box-shadow:0 5px 18px rgba(0,0,0,.55);font-size:10px;line-height:1.35}
-.cm-panel.cm-pda .cm-key-field{flex-basis:100%}
 .cm-panel.cm-pda .cm-api-info{position:static}
 .cm-panel.cm-pda .cm-api-info summary{position:absolute;top:-3px;right:0}
 .cm-panel.cm-pda .cm-api-popup{top:calc(100% + 4px);left:0;width:auto;max-width:none;box-sizing:border-box}
@@ -1749,7 +1780,7 @@
 .cm-panel .cm-api-popup th,.cm-panel .cm-api-popup td{padding:4px;border-top:1px solid #3d3d3d;
     color:#cfcfcf;text-align:left;vertical-align:top}
 .cm-panel .cm-api-popup th{width:78px;color:#c3c3c3;font-weight:bold}
-.cm-panel .cm-settings input,.cm-panel .cm-settings select{width:100%;box-sizing:border-box;
+.cm-panel .cm-settings input,.cm-panel .cm-settings select{width:100%;height:28px;box-sizing:border-box;
     margin-top:4px;padding:6px;background:#222;border:1px solid #555;border-radius:3px;color:#ddd;
     font:12px Arial,sans-serif}
 .cm-panel .cm-settings select.cm-required{border-color:#c9a14a;color:#e0c27a;

@@ -76,23 +76,45 @@ test('Torn PDA API popup stays fully inside a narrow viewport, even under a tran
     if (output) assert.match(output, /data-inside="true"/);
 });
 
-test('spendable item pills wrap below the API key and blood type', t => {
-    const output = render(t, `
+const fullSettings = `
         <div class="cm-panel"><div class="cm-settings cm-open">
-            <div id="key" class="cm-key-field"><label>API key</label><input></div>
+            <div id="key" class="cm-key-field"><label>API key — Minimal required for medical planning</label><input></div>
             <label id="blood">Your blood type<select><option>O+</option></select></label>
+            <label id="target">Full life target %<input></label>
+            <label id="most">Most life if CD blocks<select><option>No</option></select></label>
+            <label id="loans">Use faction loans<select><option>Backup</option></select></label>
             <div id="items" class="cm-field">Items it may spend from your items
-                <span class="cm-toggles"><button class="cm-chip">SFAK</button><button class="cm-chip">Blood bags</button></span>
+                <span class="cm-toggles"><button class="cm-chip">Morphine</button><button class="cm-chip">FAK</button><button class="cm-chip">SFAK</button><button class="cm-chip">Blood bags</button></span>
             </div>
             <button id="save" class="cm-save">Save</button>
         </div></div>
         <script>
             const rect = id => document.querySelector('#' + id).getBoundingClientRect();
-            const key = rect('key'), blood = rect('blood'), items = rect('items'), save = rect('save');
-            const firstRow = Math.abs(key.bottom - blood.bottom) < 2;
-            const secondRow = items.top > key.bottom + 5 && Math.abs(items.bottom - save.bottom) < 2;
-            document.body.dataset.layout = String(firstRow && secondRow);
-        </script>`);
+            const [settings, key, blood, target, most, loans, items, save] =
+                ['cm-settings', 'key', 'blood', 'target', 'most', 'loans', 'items', 'save']
+                    .map(id => id === 'cm-settings' ? document.querySelector('.cm-settings').getBoundingClientRect() : rect(id));
+            const sameRow = (...boxes) => boxes.every(box => Math.abs(box.bottom - boxes[0].bottom) < 2);
+        </script>`;
+
+test('on desktop the API key has its own row and the four dropdowns share the next one', t => {
+    const output = render(t, `${fullSettings}
+        <script>
+            const keyRow = key.width > settings.width - 30;
+            const dropdowns = sameRow(blood, target, most, loans) && blood.top > key.bottom;
+            const spending = sameRow(items, save) && items.top > loans.bottom;
+            document.body.dataset.layout = String(keyRow && dropdowns && spending);
+        </script>`, '', '800,600');
+
+    if (output) assert.match(output, /data-layout="true"/);
+});
+
+// 500px is the narrowest window headless Chrome renders.
+test('on narrow screens the dropdowns wrap and Save stays beside the item pills', t => {
+    const output = render(t, `${fullSettings}
+        <script>
+            const keyRow = key.width > settings.width - 30 && blood.top > key.bottom;
+            document.body.dataset.layout = String(keyRow && sameRow(items, save) && items.top > loans.bottom);
+        </script>`, '', '500,700');
 
     if (output) assert.match(output, /data-layout="true"/);
 });
